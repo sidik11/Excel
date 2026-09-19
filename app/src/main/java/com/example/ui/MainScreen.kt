@@ -54,6 +54,7 @@ import com.example.ui.settings.SettingsScreen
 import com.example.ui.settings.UserManualDialog
 import com.example.ui.profile.ProfileDialog
 import com.example.util.AppSecurityManager
+import com.example.util.ProfileManager
 
 enum class MainAppTab {
     EXCEL_CATALOG,
@@ -72,10 +73,21 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val vaultUiState by vaultViewModel.uiState.collectAsStateWithLifecycle()
     val securityConfig by AppSecurityManager.securityConfig.collectAsStateWithLifecycle()
+    val userProfile by ProfileManager.userProfile.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var currentTab by remember { mutableStateOf(MainAppTab.EXCEL_CATALOG) }
     var showManualDialog by remember { mutableStateOf(false) }
     var showProfileDialog by remember { mutableStateOf(false) }
+
+    // Enforce mandatory profile completion and Google connection:
+    // For new user: prompt to fill profile form and connect Google account on open.
+    // For existing user: prompt to connect Google account when user logins/enters app.
+    LaunchedEffect(userProfile) {
+        val p = userProfile
+        if (p == null || p.fullName.isBlank() || !p.isGoogleAccountConnected()) {
+            showProfileDialog = true
+        }
+    }
 
     // Push notification permission launcher (Android 13+)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(

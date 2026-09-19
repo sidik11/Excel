@@ -1,11 +1,13 @@
 package com.example.ui.profile
 
+import android.content.ActivityNotFoundException
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -29,20 +31,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Fingerprint
-import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,6 +68,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -74,9 +76,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.data.local.UserProfile
 import com.example.util.AppSecurityManager
-import com.example.util.AppStorageHelper
+import com.example.util.GoogleAuthHelper
 import com.example.util.ProfileManager
 import java.io.File
 
@@ -87,9 +90,13 @@ fun ProfileDialog(
 ) {
     val context = LocalContext.current
     val currentProfile by ProfileManager.userProfile.collectAsState()
-    val isFirstTime = currentProfile == null || !currentProfile!!.isComplete()
 
-    var isEditMode by remember { mutableStateOf(isFirstTime) }
+    // Status flags
+    val isNewUser = currentProfile == null || currentProfile!!.fullName.isBlank()
+    val isGoogleMissing = currentProfile != null && !currentProfile!!.isGoogleAccountConnected()
+    val isMandatorySetup = isNewUser || isGoogleMissing
+
+    var isEditMode by remember { mutableStateOf(isMandatorySetup) }
 
     // Form states
     var fullName by remember { mutableStateOf(currentProfile?.fullName ?: "") }
@@ -110,9 +117,18 @@ fun ProfileDialog(
     var profileImageBase64 by remember { mutableStateOf(currentProfile?.profileImageBase64 ?: "") }
     var profileImagePath by remember { mutableStateOf(currentProfile?.profileImagePath ?: "") }
 
-    var validationError by remember { mutableStateOf<String?>(null) }
+    // Google Account states
+    var googleEmail by remember { mutableStateOf(currentProfile?.googleEmail ?: "") }
+    var googleDisplayName by remember { mutableStateOf(currentProfile?.googleDisplayName ?: "") }
+    var isGoogleConnected by remember { mutableStateOf(currentProfile?.isGoogleConnected == true || !currentProfile?.googleEmail.isNullOrBlank()) }
 
-    // Update fields if currentProfile changes externally
+    var validationError by remember { mutableStateOf<String?>(null) }
+    var showManualGoogleDialog by remember { mutableStateOf(false) }
+    var showFlashBootImportDialog by remember { mutableStateOf(false) }
+    var manualGoogleEmailInput by remember { mutableStateOf("") }
+    var manualGoogleNameInput by remember { mutableStateOf("") }
+
+    // Sync fields if currentProfile changes externally (e.g. from fingerprint import or account connect)
     LaunchedEffect(currentProfile) {
         currentProfile?.let { p ->
             fullName = p.fullName
@@ -127,6 +143,13 @@ fun ProfileDialog(
             pincode = p.pincode
             profileImageBase64 = p.profileImageBase64
             profileImagePath = p.profileImagePath
+            googleEmail = p.googleEmail
+            googleDisplayName = p.googleDisplayName
+            isGoogleConnected = p.isGoogleAccountConnected()
+
+            if (p.isComplete()) {
+                isEditMode = false
+            }
         }
     }
 
@@ -145,21 +168,66 @@ fun ProfileDialog(
         }
     }
 
+    // Account picker launcher
+    val accountPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val chosenEmail = GoogleAuthHelper.parseAccountPickerResult(result.resultCode, result.data)
+        if (chosenEmail != null) {
+            val (ok, msg) = GoogleAuthHelper.connectGoogleAccount(context, chosenEmail)
+            if (ok) {
+                googleEmail = chosenEmail
+                googleDisplayName = GoogleAuthHelper.deriveDisplayNameFromEmail(chosenEmail)
+                isGoogleConnected = true
+                if (emailId.isBlank()) emailId = chosenEmail
+                if (fullName.isBlank()) fullName = googleDisplayName
+                validationError = null
+                Toast.makeText(context, "Connected with Google: $chosenEmail", Toast.LENGTH_LONG).show()
+            } else {
+                validationError = msg
+            }
+        }
+    }
+
+    // Fingerprint DAT file picker launcher (Cross-device restore)
+    val fingerprintFilePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val (ok, msg) = AppSecurityManager.importProfileAndFingerprintFromUri(context, uri)
+            if (ok) {
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                validationError = null
+                val restored = ProfileManager.userProfile.value
+                if (restored != null && restored.isComplete()) {
+                    isEditMode = false
+                    onDismiss()
+                }
+            } else {
+                validationError = msg
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = {
-            if (!isFirstTime) onDismiss()
+            if (!isMandatorySetup) onDismiss()
         },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = !isMandatorySetup,
+            dismissOnClickOutside = !isMandatorySetup
+        )
     ) {
         Surface(
             modifier = modifier
                 .fillMaxWidth(0.95f)
-                .padding(vertical = 24.dp)
-                .clip(RoundedCornerShape(20.dp))
+                .padding(vertical = 20.dp)
+                .clip(RoundedCornerShape(22.dp))
                 .testTag("dialog_user_profile"),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 6.dp,
-            border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
         ) {
             Column(
                 modifier = Modifier
@@ -177,34 +245,34 @@ fun ProfileDialog(
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(38.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     Icons.Default.AccountCircle,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(22.dp)
+                                    modifier = Modifier.size(24.dp)
                                 )
                             }
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = if (isFirstTime) "Create Profile" else if (isEditMode) "Edit Profile" else "User Profile",
+                                text = if (isNewUser) "Create Profile" else if (isGoogleMissing) "Google Account Required" else if (isEditMode) "Edit Profile" else "User Profile",
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (isFirstTime) "All fields are required to register fingerprint" else "Saved in Android/media profile storage",
+                                text = if (isNewUser) "Fill profile form and connect Google account" else if (isGoogleMissing) "Mandatory: Connect Google account to proceed" else "Synced with fingerprint.dat",
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (isMandatorySetup) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
 
-                    if (!isFirstTime) {
+                    if (!isMandatorySetup) {
                         IconButton(
                             onClick = onDismiss,
                             modifier = Modifier.testTag("btn_close_profile")
@@ -216,6 +284,86 @@ fun ProfileDialog(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
+                // Import from fingerprint.dat shortcut button
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                        .clickable {
+                            fingerprintFilePicker.launch(arrayOf("*/*"))
+                        }
+                        .testTag("btn_import_fingerprint_dat")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.UploadFile,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Put / Import fingerprint.dat",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "Restores all profile and Google account info automatically",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // Flash Boot Restore option (Cross-Device SSD Migration)
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .clickable {
+                            showFlashBootImportDialog = true
+                        }
+                        .testTag("btn_profile_flash_boot_restore")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.ElectricBolt,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "⚡ Flash Boot: Restore from External SSD",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "Load existing settings, catalog, DAT vault, accounts & auto-delete package",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
                 // Profile Picture Avatar
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -224,7 +372,7 @@ fun ProfileDialog(
                     Box(
                         contentAlignment = Alignment.BottomEnd,
                         modifier = Modifier
-                            .size(100.dp)
+                            .size(96.dp)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .border(2.5.dp, MaterialTheme.colorScheme.primary, CircleShape)
@@ -233,43 +381,41 @@ fun ProfileDialog(
                             }
                             .testTag("profile_avatar_box")
                     ) {
-                        var decodedBitmap by remember(profileImageBase64) {
-                            mutableStateOf(
-                                try {
-                                    if (profileImageBase64.isNotBlank()) {
-                                        val bytes = Base64.decode(profileImageBase64, Base64.DEFAULT)
-                                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                    } else null
-                                } catch (_: Throwable) {
-                                    null
-                                }
-                            )
+                        val decodedBitmap = remember(profileImageBase64) {
+                            try {
+                                if (profileImageBase64.isNotBlank()) {
+                                    val bytes = Base64.decode(profileImageBase64, Base64.DEFAULT)
+                                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                } else null
+                            } catch (_: Throwable) {
+                                null
+                            }
                         }
 
                         if (decodedBitmap != null) {
                             Image(
-                                bitmap = decodedBitmap!!.asImageBitmap(),
+                                bitmap = decodedBitmap.asImageBitmap(),
                                 contentDescription = "Profile Picture",
-                                modifier = Modifier.size(100.dp).clip(CircleShape),
+                                modifier = Modifier.size(96.dp).clip(CircleShape),
                                 contentScale = ContentScale.Crop
                             )
                         } else if (profileImagePath.isNotBlank() && File(profileImagePath).exists()) {
                             AsyncImage(
                                 model = File(profileImagePath),
                                 contentDescription = "Profile Picture",
-                                modifier = Modifier.size(100.dp).clip(CircleShape),
+                                modifier = Modifier.size(96.dp).clip(CircleShape),
                                 contentScale = ContentScale.Crop
                             )
                         } else {
                             Box(
-                                modifier = Modifier.size(100.dp),
+                                modifier = Modifier.size(96.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     Icons.Default.Person,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(54.dp)
+                                    modifier = Modifier.size(50.dp)
                                 )
                             }
                         }
@@ -280,27 +426,27 @@ fun ProfileDialog(
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier
                                     .padding(2.dp)
-                                    .size(28.dp)
+                                    .size(26.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         Icons.Default.CameraAlt,
                                         contentDescription = "Pick Photo",
                                         tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(15.dp)
                                     )
                                 }
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
                     if (isEditMode) {
+                        Spacer(modifier = Modifier.height(4.dp))
                         TextButton(
                             onClick = { photoPickerLauncher.launch("image/*") },
                             modifier = Modifier.testTag("btn_select_profile_photo")
                         ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 if (profileImageBase64.isBlank() && profileImagePath.isBlank()) "Add Profile Picture *" else "Change Picture",
@@ -313,12 +459,184 @@ fun ProfileDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                // MANDATORY "CONNECT WITH GOOGLE" SECTION (Prominently featured)
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isGoogleConnected) Color(0xFF00B894).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    border = BorderStroke(
+                        1.5.dp,
+                        if (isGoogleConnected) Color(0xFF00B894) else MaterialTheme.colorScheme.error
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .testTag("section_connect_google")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_google_logo),
+                                    contentDescription = "Google",
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "Google Account",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (isGoogleConnected) "Connected & Synchronized" else "Mandatory Connection",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (isGoogleConnected) Color(0xFF00B894) else MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+
+                            if (isGoogleConnected) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF00B894).copy(alpha = 0.2f)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            tint = Color(0xFF00B894),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            "Linked",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF00B894)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        if (isGoogleConnected && googleEmail.isNotBlank()) {
+                            // Connected info display
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text(
+                                        text = googleEmail,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (googleDisplayName.isNotBlank()) {
+                                        Text(
+                                            text = googleDisplayName,
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Text(
+                                        text = "Account data embedded in fingerprint.dat backup",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
+                            if (isEditMode) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            try {
+                                                accountPickerLauncher.launch(GoogleAuthHelper.createGoogleAccountPickerIntent())
+                                            } catch (_: ActivityNotFoundException) {
+                                                showManualGoogleDialog = true
+                                            }
+                                        }
+                                    ) {
+                                        Text("Switch Google Account", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        } else {
+                            // Mandatory Notice
+                            Text(
+                                text = "Connecting with Google is mandatory to complete your profile and enable cross-device fingerprint.dat login.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Mandatory "Connect with google" Button
+                            Button(
+                                onClick = {
+                                    try {
+                                        accountPickerLauncher.launch(GoogleAuthHelper.createGoogleAccountPickerIntent())
+                                    } catch (_: ActivityNotFoundException) {
+                                        showManualGoogleDialog = true
+                                    } catch (_: Throwable) {
+                                        showManualGoogleDialog = true
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                ),
+                                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp)
+                                    .testTag("btn_connect_google")
+                            ) {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_google_logo),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Connect with google",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
                 // Validation Error Banner
                 if (validationError != null) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
                         modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
                     ) {
                         Row(
@@ -335,11 +653,11 @@ fun ProfileDialog(
                     }
                 }
 
-                // If VIEW MODE (not editMode) -> Show crisp details + Update Button
+                // If VIEW MODE (not editMode and profile complete) -> Show crisp details + Update Button
                 if (!isEditMode && currentProfile != null && currentProfile!!.isComplete()) {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         ProfileDetailItem(label = "Full Name", value = fullName)
                         ProfileDetailItem(label = "Date of Birth", value = dateOfBirth)
@@ -351,8 +669,9 @@ fun ProfileDialog(
                         ProfileDetailItem(label = "State", value = state)
                         ProfileDetailItem(label = "Country", value = country)
                         ProfileDetailItem(label = "Pincode", value = pincode)
+                        ProfileDetailItem(label = "Google Account", value = googleEmail)
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         // Fingerprint Info Badge
                         val securityConfig by AppSecurityManager.securityConfig.collectAsState()
@@ -374,13 +693,13 @@ fun ProfileDialog(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
                                     Text(
-                                        text = if (securityConfig.isFingerprintRegistered) "Fingerprint & Profile Linked" else "Profile Ready for Fingerprint Registration",
+                                        text = if (securityConfig.isFingerprintRegistered) "Fingerprint & Google Account Linked" else "Profile Ready for Fingerprint Registration",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = if (securityConfig.isFingerprintRegistered) Color(0xFF00B894) else MaterialTheme.colorScheme.primary
                                     )
                                     Text(
-                                        text = "Saved in: Android/media/.../profile and embedded in fingerprint.dat",
+                                        text = "Saved in: Android/media/.../profile and fingerprint.dat",
                                         fontSize = 10.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -530,23 +849,25 @@ fun ProfileDialog(
                                     country = country.trim(),
                                     pincode = pincode.trim(),
                                     profileImageBase64 = profileImageBase64.trim(),
-                                    profileImagePath = profileImagePath.trim()
+                                    profileImagePath = profileImagePath.trim(),
+                                    googleEmail = googleEmail.trim(),
+                                    googleDisplayName = googleDisplayName.trim(),
+                                    isGoogleConnected = isGoogleConnected && googleEmail.isNotBlank()
                                 )
 
                                 val missing = proposed.getFirstMissingField()
                                 if (missing != null) {
-                                    validationError = "Every field is required: $missing is missing."
+                                    validationError = "Every field is required: $missing."
                                     return@Button
                                 }
 
                                 val (ok, msg) = ProfileManager.saveProfile(context, proposed)
                                 if (ok) {
-                                    Toast.makeText(context, "Profile saved in media folder!", Toast.LENGTH_SHORT).show()
-                                    // If fingerprint is already registered, update the backup file with new profile info
+                                    Toast.makeText(context, "Profile saved and synced with fingerprint.dat!", Toast.LENGTH_SHORT).show()
                                     AppSecurityManager.updateFingerprintProfileDataIfRegistered(context)
                                     isEditMode = false
                                     validationError = null
-                                    if (isFirstTime) {
+                                    if (isMandatorySetup) {
                                         onDismiss()
                                     }
                                 } else {
@@ -560,10 +881,10 @@ fun ProfileDialog(
                         ) {
                             Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (isFirstTime) "Save Profile" else "Save Changes", fontWeight = FontWeight.Bold)
+                            Text(if (isNewUser) "Save & Connect Profile" else "Save Changes", fontWeight = FontWeight.Bold)
                         }
 
-                        if (!isFirstTime) {
+                        if (!isMandatorySetup) {
                             OutlinedButton(
                                 onClick = {
                                     isEditMode = false
@@ -580,6 +901,95 @@ fun ProfileDialog(
                     }
                 }
             }
+        }
+    }
+
+    // Fallback dialog for entering Google Account email (e.g. for emulators or testing)
+    if (showManualGoogleDialog) {
+        AlertDialog(
+            onDismissRequest = { showManualGoogleDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_google_logo),
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Connect Google Account", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Enter your Google Account email to link your profile with fingerprint.dat:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = manualGoogleEmailInput,
+                        onValueChange = { manualGoogleEmailInput = it },
+                        label = { Text("Google Account Email") },
+                        placeholder = { Text("e.g. user@gmail.com") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("input_manual_google_email")
+                    )
+                    OutlinedTextField(
+                        value = manualGoogleNameInput,
+                        onValueChange = { manualGoogleNameInput = it },
+                        label = { Text("Display Name (Optional)") },
+                        placeholder = { Text("e.g. John Doe") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("input_manual_google_name")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val (ok, msg) = GoogleAuthHelper.connectGoogleAccount(
+                            context = context,
+                            email = manualGoogleEmailInput,
+                            displayName = manualGoogleNameInput
+                        )
+                        if (ok) {
+                            googleEmail = manualGoogleEmailInput.trim()
+                            googleDisplayName = if (manualGoogleNameInput.isNotBlank()) manualGoogleNameInput.trim() else GoogleAuthHelper.deriveDisplayNameFromEmail(googleEmail)
+                            isGoogleConnected = true
+                            if (emailId.isBlank()) emailId = googleEmail
+                            if (fullName.isBlank()) fullName = googleDisplayName
+                            showManualGoogleDialog = false
+                            validationError = null
+                            Toast.makeText(context, "Google Account connected!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    modifier = Modifier.testTag("btn_confirm_manual_google")
+                ) {
+                    Text("Connect")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualGoogleDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+
+        if (showFlashBootImportDialog) {
+            com.example.ui.settings.FlashBootImportDialog(
+                onDismiss = { showFlashBootImportDialog = false },
+                onSuccess = { msg ->
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    showFlashBootImportDialog = false
+                    val restored = com.example.util.ProfileManager.userProfile.value
+                    if (restored != null && restored.isComplete()) {
+                        isEditMode = false
+                        onDismiss()
+                    }
+                }
+            )
         }
     }
 }

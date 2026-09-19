@@ -68,7 +68,7 @@ object ProfileManager {
             try {
                 val jsonStr = fileToRead.readText(StandardCharsets.UTF_8)
                 val profile = jsonToProfile(jsonStr, context)
-                if (profile != null && profile.isComplete()) {
+                if (profile != null && (profile.fullName.isNotBlank() || profile.emailId.isNotBlank() || profile.googleEmail.isNotBlank())) {
                     _userProfile.value = profile
                     return profile
                 }
@@ -76,6 +76,21 @@ object ProfileManager {
                 e.printStackTrace()
             }
         }
+
+        // If no profile was found in profile files, check if a fingerprint.dat exists on this device to restore
+        try {
+            val fpDatFile = File(AppStorageHelper.getFingerprintDir(context), AppSecurityManager.FINGERPRINT_DAT_FILE_NAME)
+            val fpBackupFile = File(AppStorageHelper.getFingerprintDir(context), AppSecurityManager.FINGERPRINT_BACKUP_FILE_NAME)
+            val targetFpFile = if (fpDatFile.exists() && fpDatFile.length() > 0) fpDatFile else if (fpBackupFile.exists() && fpBackupFile.length() > 0) fpBackupFile else null
+            if (targetFpFile != null) {
+                val content = targetFpFile.readText(StandardCharsets.UTF_8)
+                AppSecurityManager.extractAndRestoreProfileFromContent(context, content)
+                val restored = _userProfile.value
+                if (restored != null) {
+                    return restored
+                }
+            }
+        } catch (_: Throwable) {}
 
         _userProfile.value = null
         return null
@@ -85,10 +100,12 @@ object ProfileManager {
      * Saves or updates the user profile to disk (both in media directory and app files).
      * Saves user_profile.json and decodes profile picture to profile_photo.jpg in media directory.
      */
-    fun saveProfile(context: Context, profile: UserProfile): Pair<Boolean, String> {
-        val missing = profile.getFirstMissingField()
-        if (missing != null) {
-            return Pair(false, "$missing is required.")
+    fun saveProfile(context: Context, profile: UserProfile, enforceComplete: Boolean = true): Pair<Boolean, String> {
+        if (enforceComplete) {
+            val missing = profile.getFirstMissingField()
+            if (missing != null) {
+                return Pair(false, "$missing is required.")
+            }
         }
 
         try {
@@ -97,12 +114,14 @@ object ProfileManager {
 
             // Save image bytes to media folder
             if (profile.profileImageBase64.isNotBlank()) {
-                val imageBytes = Base64.decode(profile.profileImageBase64, Base64.DEFAULT)
-                mediaPhotoFile.writeBytes(imageBytes)
+                try {
+                    val imageBytes = Base64.decode(profile.profileImageBase64, Base64.DEFAULT)
+                    mediaPhotoFile.writeBytes(imageBytes)
+                } catch (_: Throwable) {}
             }
 
             val completeProfile = profile.copy(
-                profileImagePath = mediaPhotoFile.absolutePath,
+                profileImagePath = if (mediaPhotoFile.exists()) mediaPhotoFile.absolutePath else profile.profileImagePath,
                 device = if (profile.device.isBlank()) getAutoDeviceModel() else profile.device,
                 updatedAt = System.currentTimeMillis()
             )
@@ -127,6 +146,56 @@ object ProfileManager {
     }
 
     /**
+     * Connects or updates the Google account for the user profile.
+     */
+    fun connectGoogleAccount(
+        context: Context,
+        email: String,
+        displayName: String = "",
+        googleId: String = "",
+        photoUrl: String = ""
+    ): Pair<Boolean, String> {
+        val current = _userProfile.value ?: UserProfile(device = getAutoDeviceModel())
+        val updated = current.copy(
+            googleEmail = email.trim(),
+            googleDisplayName = if (displayName.isNotBlank()) displayName.trim() else current.googleDisplayName,
+            googleId = if (googleId.isNotBlank()) googleId.trim() else current.googleId,
+            googleProfilePicUrl = if (photoUrl.isNotBlank()) photoUrl.trim() else current.googleProfilePicUrl,
+            isGoogleConnected = true,
+            emailId = if (current.emailId.isBlank()) email.trim() else current.emailId,
+            fullName = if (current.fullName.isBlank() && displayName.isNotBlank()) displayName.trim() else current.fullName
+        )
+
+        val (ok, msg) = saveProfile(context, updated, enforceComplete = false)
+        if (ok) {
+            // Update fingerprint.dat immediately with the new Google account info
+            AppSecurityManager.updateFingerprintProfileDataIfRegistered(context)
+            return Pair(true, "Google account connected successfully: $email")
+        }
+        return Pair(false, msg)
+    }
+
+    /**
+     * Disconnects Google account from the profile.
+     */
+    fun disconnectGoogleAccount(context: Context): Pair<Boolean, String> {
+        val current = _userProfile.value ?: return Pair(false, "No profile exists.")
+        val updated = current.copy(
+            googleEmail = "",
+            googleDisplayName = "",
+            googleId = "",
+            googleProfilePicUrl = "",
+            isGoogleConnected = false
+        )
+        val (ok, msg) = saveProfile(context, updated, enforceComplete = false)
+        if (ok) {
+            AppSecurityManager.updateFingerprintProfileDataIfRegistered(context)
+            return Pair(true, "Google account disconnected.")
+        }
+        return Pair(false, msg)
+    }
+
+    /**
      * Exports profile as a JSON object (used for embedding into fingerprint.dat).
      */
     fun profileToJson(profile: UserProfile): JSONObject {
@@ -143,6 +212,11 @@ object ProfileManager {
             put("pincode", profile.pincode)
             put("profileImageBase64", profile.profileImageBase64)
             put("profileImagePath", profile.profileImagePath)
+            put("googleEmail", profile.googleEmail)
+            put("googleDisplayName", profile.googleDisplayName)
+            put("googleId", profile.googleId)
+            put("googleProfilePicUrl", profile.googleProfilePicUrl)
+            put("isGoogleConnected", profile.isGoogleConnected)
             put("updatedAt", profile.updatedAt)
         }
     }
@@ -167,6 +241,9 @@ object ProfileManager {
                 } catch (_: Throwable) {}
             }
 
+            val gEmail = json.optString("googleEmail", "")
+            val isGConnected = json.optBoolean("isGoogleConnected", false) || gEmail.isNotBlank()
+
             UserProfile(
                 fullName = json.optString("fullName", ""),
                 dateOfBirth = json.optString("dateOfBirth", ""),
@@ -180,6 +257,11 @@ object ProfileManager {
                 pincode = json.optString("pincode", ""),
                 profileImageBase64 = imgBase64,
                 profileImagePath = imgPath,
+                googleEmail = gEmail,
+                googleDisplayName = json.optString("googleDisplayName", ""),
+                googleId = json.optString("googleId", ""),
+                googleProfilePicUrl = json.optString("googleProfilePicUrl", ""),
+                isGoogleConnected = isGConnected,
                 updatedAt = json.optLong("updatedAt", 0L)
             )
         } catch (_: Throwable) {
@@ -191,7 +273,7 @@ object ProfileManager {
      * Imports and activates a UserProfile restored from a fingerprint.dat file on this device.
      */
     fun restoreProfileFromFingerprint(context: Context, profile: UserProfile) {
-        saveProfile(context, profile)
+        saveProfile(context, profile, enforceComplete = false)
     }
 
     /**
@@ -200,6 +282,20 @@ object ProfileManager {
     fun hasCompleteProfile(): Boolean {
         val p = _userProfile.value
         return p != null && p.isComplete()
+    }
+
+    /**
+     * Deletes existing profile from storage and clears memory state.
+     */
+    fun deleteProfile(context: Context) {
+        try {
+            val mediaDir = AppStorageHelper.getProfileMediaDir(context)
+            File(mediaDir, PROFILE_FILE_NAME).delete()
+            File(mediaDir, PROFILE_PHOTO_FILE_NAME).delete()
+            val internalJsonFile = File(context.filesDir, PROFILE_FILE_NAME)
+            internalJsonFile.delete()
+        } catch (_: Throwable) {}
+        _userProfile.value = null
     }
 
     /**

@@ -9,6 +9,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
+import com.example.data.local.UserProfile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,6 +46,7 @@ data class SecurityConfig(
     val isAntiScreenshotEnabled: Boolean = true,
     val pinSalt: String = "",
     val pinHash: String = "",
+    val pinCode: String = "",
     val biometricToken: String = "",
     val masterPasswordHash: String = "",
     val masterPasswordSalt: String = "",
@@ -78,21 +80,36 @@ object AppSecurityManager {
         val configFile = File(securityDir, CONFIG_FILE_NAME)
         val pinFile = File(securityDir, PIN_FILE_NAME)
 
+        // Check if fingerprint backup file exists on disk in fingerprint directory, security directory, media directory, or filesDir
+        val candidateFiles = listOf(
+            File(AppStorageHelper.getFingerprintDir(context), FINGERPRINT_DAT_FILE_NAME),
+            File(AppStorageHelper.getFingerprintDir(context), FINGERPRINT_BACKUP_FILE_NAME),
+            File(AppStorageHelper.getSecurityDir(context), FINGERPRINT_DAT_FILE_NAME),
+            File(AppStorageHelper.getDedicatedMediaDir(context), FINGERPRINT_DAT_FILE_NAME),
+            File(context.filesDir, FINGERPRINT_DAT_FILE_NAME)
+        )
+        val targetFile = candidateFiles.firstOrNull { it.exists() && it.length() > 0 }
+        var hasFpBackupOnDisk = targetFile != null
+        var fpBackupPath = targetFile?.absolutePath ?: ""
+
         if (configFile.exists() && configFile.canRead()) {
             try {
                 val jsonStr = configFile.readText(StandardCharsets.UTF_8)
                 val json = JSONObject(jsonStr)
 
-                val isPin = json.optBoolean("isPinEnabled", false)
+                var isPin = json.optBoolean("isPinEnabled", false)
                 val isFp = json.optBoolean("isFingerprintEnabled", false)
                 val isFpReg = json.optBoolean("isFingerprintRegistered", false)
                 val fpRegAt = json.optLong("fingerprintRegisteredAt", 0L)
-                var fpBackupPath = json.optString("fingerprintBackupPath", "")
+                if (fpBackupPath.isEmpty()) {
+                    fpBackupPath = json.optString("fingerprintBackupPath", "")
+                }
                 var fpBackupHash = json.optString("fingerprintBackupHash", "")
                 var fpBackupSalt = json.optString("fingerprintBackupSalt", "")
                 val isAntiScreenshot = json.optBoolean("isAntiScreenshotEnabled", true)
                 var salt = json.optString("pinSalt", "")
                 var hash = json.optString("pinHash", "")
+                var pinCode = json.optString("pinCode", "")
                 val fpToken = json.optString("biometricToken", "")
                 val masterHash = json.optString("masterPasswordHash", "")
                 val masterSalt = json.optString("masterPasswordSalt", "")
@@ -100,28 +117,34 @@ object AppSecurityManager {
                 val updated = json.optLong("updatedAt", System.currentTimeMillis())
 
                 // Check backup in pinFile if config was somehow incomplete
-                if (isPin && hash.isEmpty() && pinFile.exists()) {
+                if (pinFile.exists()) {
                     val pinLines = pinFile.readLines()
                     if (pinLines.size >= 2) {
-                        salt = pinLines[0].trim()
-                        hash = pinLines[1].trim()
+                        if (salt.isEmpty()) salt = pinLines[0].trim()
+                        if (hash.isEmpty()) hash = pinLines[1].trim()
                     }
+                    if (pinLines.size >= 3 && pinCode.isEmpty()) {
+                        val candidatePin = pinLines[2].trim()
+                        if (candidatePin.length == 6 && candidatePin.all { it.isDigit() }) {
+                            pinCode = candidatePin
+                        }
+                    }
+                    if (hash.isNotEmpty()) isPin = true
                 }
 
-                // Check if fingerprint backup file exists on disk (support both fingerprint.dat and fingerprint_backup.dat)
-                val fpBackupFile = File(AppStorageHelper.getFingerprintDir(context), FINGERPRINT_BACKUP_FILE_NAME)
-                val fpDatFile = File(AppStorageHelper.getFingerprintDir(context), FINGERPRINT_DAT_FILE_NAME)
-                val targetFile = if (fpDatFile.exists() && fpDatFile.length() > 0) fpDatFile else fpBackupFile
-                val hasFpBackupOnDisk = targetFile.exists() && targetFile.length() > 0
-                if (hasFpBackupOnDisk && fpBackupPath.isEmpty()) {
-                    fpBackupPath = targetFile.absolutePath
-                }
-
-                // If fingerprint file exists on disk, check if it contains profile data to restore
-                if (hasFpBackupOnDisk && !ProfileManager.hasCompleteProfile()) {
+                // If fingerprint file exists on disk, restore profile and auto-enable password if present
+                if (targetFile != null) {
                     try {
                         val content = targetFile.readText(StandardCharsets.UTF_8)
                         extractAndRestoreProfileFromContent(context, content)
+                        val pinAutoRestored = extractAndRestorePinFromContent(context, content)
+                        if (pinAutoRestored) {
+                            val currentConfig = _securityConfig.value
+                            isPin = true
+                            salt = currentConfig.pinSalt
+                            hash = currentConfig.pinHash
+                            pinCode = currentConfig.pinCode
+                        }
                     } catch (_: Throwable) {}
                 }
 
@@ -129,13 +152,14 @@ object AppSecurityManager {
                     isPinEnabled = isPin && hash.isNotEmpty(),
                     isFingerprintEnabled = isFp || (isFpReg && hasFpBackupOnDisk),
                     isFingerprintRegistered = isFpReg || hasFpBackupOnDisk,
-                    fingerprintRegisteredAt = if (fpRegAt > 0) fpRegAt else if (hasFpBackupOnDisk) fpBackupFile.lastModified() else 0L,
+                    fingerprintRegisteredAt = if (fpRegAt > 0) fpRegAt else if (hasFpBackupOnDisk) targetFile?.lastModified() ?: 0L else 0L,
                     fingerprintBackupPath = fpBackupPath,
                     fingerprintBackupHash = fpBackupHash,
                     fingerprintBackupSalt = fpBackupSalt,
                     isAntiScreenshotEnabled = isAntiScreenshot,
                     pinSalt = salt,
                     pinHash = hash,
+                    pinCode = pinCode,
                     biometricToken = fpToken,
                     masterPasswordHash = masterHash,
                     masterPasswordSalt = masterSalt,
@@ -149,14 +173,36 @@ object AppSecurityManager {
                 _isAppUnlocked.value = true
             }
         } else {
-            // First time initialization
-            val initial = SecurityConfig(
-                isPinEnabled = false,
-                isFingerprintEnabled = false,
-                isAntiScreenshotEnabled = true
-            )
+            // First time initialization on this device
+            // If fingerprint backup file already exists on this new device, restore profile and password!
+            var autoEnabledPin = false
+            if (targetFile != null) {
+                try {
+                    val content = targetFile.readText(StandardCharsets.UTF_8)
+                    extractAndRestoreProfileFromContent(context, content)
+                    autoEnabledPin = extractAndRestorePinFromContent(context, content)
+                } catch (_: Throwable) {}
+            }
+
+            val currentAfterFp = _securityConfig.value
+            val initial = if (autoEnabledPin) {
+                currentAfterFp.copy(
+                    isFingerprintEnabled = true,
+                    isFingerprintRegistered = true,
+                    fingerprintBackupPath = fpBackupPath,
+                    updatedAt = System.currentTimeMillis()
+                )
+            } else {
+                SecurityConfig(
+                    isPinEnabled = false,
+                    isFingerprintEnabled = hasFpBackupOnDisk,
+                    isFingerprintRegistered = hasFpBackupOnDisk,
+                    fingerprintBackupPath = fpBackupPath,
+                    isAntiScreenshotEnabled = true
+                )
+            }
             _securityConfig.value = initial
-            _isAppUnlocked.value = true
+            _isAppUnlocked.value = !initial.isPinEnabled
             saveConfig(context, initial)
         }
     }
@@ -176,6 +222,7 @@ object AppSecurityManager {
                 put("isAntiScreenshotEnabled", config.isAntiScreenshotEnabled)
                 put("pinSalt", config.pinSalt)
                 put("pinHash", config.pinHash)
+                put("pinCode", config.pinCode)
                 put("biometricToken", config.biometricToken)
                 put("masterPasswordHash", config.masterPasswordHash)
                 put("masterPasswordSalt", config.masterPasswordSalt)
@@ -218,7 +265,7 @@ object AppSecurityManager {
         try {
             val securityDir = AppStorageHelper.getSecurityDir(context)
             val pinFile = File(securityDir, PIN_FILE_NAME)
-            pinFile.writeText("$salt\n$hash\n# 6-Digit PIN Secure Salt & SHA-256 Hash\n", StandardCharsets.UTF_8)
+            pinFile.writeText("$salt\n$hash\n$newPin\n# 6-Digit PIN Secure Salt, SHA-256 Hash & Password\n", StandardCharsets.UTF_8)
         } catch (e: Throwable) {
             e.printStackTrace()
         }
@@ -227,10 +274,15 @@ object AppSecurityManager {
             isPinEnabled = true,
             pinSalt = salt,
             pinHash = hash,
+            pinCode = newPin,
             failedAttempts = 0,
             updatedAt = System.currentTimeMillis()
         )
         saveConfig(context, updated)
+
+        // Ensure fingerprint.dat also embeds the 6-digit password if fingerprint backup exists
+        updateFingerprintPinDataIfRegistered(context, newPin, salt, hash, isPinEnabled = true)
+
         _isAppUnlocked.value = true
         return true
     }
@@ -304,10 +356,12 @@ object AppSecurityManager {
             isFingerprintEnabled = false,
             pinSalt = "",
             pinHash = "",
+            pinCode = "",
             failedAttempts = 0,
             updatedAt = System.currentTimeMillis()
         )
         saveConfig(context, updated)
+        updateFingerprintPinDataIfRegistered(context, "", "", "", isPinEnabled = false)
         _isAppUnlocked.value = true
         return Pair(true, "App Lock PIN disabled.")
     }
@@ -380,6 +434,21 @@ object AppSecurityManager {
         val profile = ProfileManager.userProfile.value
         val profileJsonString = if (profile != null) ProfileManager.profileToJson(profile).toString() else ""
 
+        val pinCode = current.pinCode.ifEmpty {
+            try {
+                val pinFile = File(AppStorageHelper.getSecurityDir(context), PIN_FILE_NAME)
+                if (pinFile.exists()) {
+                    val lines = pinFile.readLines()
+                    if (lines.size >= 3 && lines[2].trim().length == 6 && lines[2].trim().all { it.isDigit() }) {
+                        lines[2].trim()
+                    } else ""
+                } else ""
+            } catch (_: Throwable) { "" }
+        }
+        val pinSalt = current.pinSalt
+        val pinHash = current.pinHash
+        val isPinEnabled = current.isPinEnabled || pinCode.isNotEmpty() || pinHash.isNotEmpty()
+
         val backupContent = buildString {
             appendLine("# ========================================================")
             appendLine("# AI STUDIO APP SECURITY - REGISTERED FINGERPRINT BACKUP")
@@ -394,6 +463,15 @@ object AppSecurityManager {
             appendLine("REGISTERED_AT=$timestamp")
             appendLine("DEVICE=$deviceName")
             appendLine("PACKAGE=${context.packageName}")
+            appendLine("PIN_CODE=$pinCode")
+            appendLine("PIN_PASSWORD=$pinCode")
+            appendLine("PIN_SALT=$pinSalt")
+            appendLine("PIN_HASH=$pinHash")
+            appendLine("PIN_ENABLED=$isPinEnabled")
+            appendLine("GOOGLE_EMAIL=${profile?.googleEmail ?: ""}")
+            appendLine("GOOGLE_NAME=${profile?.googleDisplayName ?: ""}")
+            appendLine("GOOGLE_ID=${profile?.googleId ?: ""}")
+            appendLine("GOOGLE_CONNECTED=${profile?.isGoogleConnected ?: false}")
             if (profileJsonString.isNotEmpty()) {
                 appendLine("PROFILE_JSON=$profileJsonString")
             }
@@ -411,6 +489,13 @@ object AppSecurityManager {
                 put("registeredAt", timestamp)
                 put("device", deviceName)
                 put("filePath", datFile.absolutePath)
+                put("pinCode", pinCode)
+                put("pinSalt", pinSalt)
+                put("pinHash", pinHash)
+                put("isPinEnabled", isPinEnabled)
+                put("googleEmail", profile?.googleEmail ?: "")
+                put("googleDisplayName", profile?.googleDisplayName ?: "")
+                put("isGoogleConnected", profile?.isGoogleConnected ?: false)
                 if (profile != null) {
                     put("profile", ProfileManager.profileToJson(profile))
                 }
@@ -433,15 +518,17 @@ object AppSecurityManager {
             fingerprintBackupHash = hash,
             fingerprintBackupSalt = salt,
             biometricToken = token,
+            pinCode = if (current.pinCode.isEmpty()) pinCode else current.pinCode,
+            isPinEnabled = isPinEnabled,
             updatedAt = System.currentTimeMillis()
         )
         saveConfig(context, updated)
 
-        return Pair(true, "Fingerprint & Profile registered!\nSaved to: security/fingerprint/$FINGERPRINT_DAT_FILE_NAME")
+        return Pair(true, "Fingerprint, Profile, Google Account & 6-Digit Password registered!\nSaved to: security/fingerprint/$FINGERPRINT_DAT_FILE_NAME")
     }
 
     /**
-     * Updates profile info in existing fingerprint.dat and fingerprint_backup.dat files if fingerprint is already registered.
+     * Updates profile info and Google account in existing fingerprint.dat and fingerprint_backup.dat files if fingerprint is already registered.
      */
     fun updateFingerprintProfileDataIfRegistered(context: Context) {
         val current = _securityConfig.value
@@ -458,49 +545,290 @@ object AppSecurityManager {
         try {
             val content = targetFile.readText(StandardCharsets.UTF_8)
             val profileJsonString = ProfileManager.profileToJson(profile).toString()
+            val gEmail = profile.googleEmail
+            val gName = profile.googleDisplayName
+            val gId = profile.googleId
+            val gConnected = profile.isGoogleConnected
 
-            val newContent = if (content.contains("PROFILE_JSON=")) {
-                content.lines().joinToString("\n") { line ->
-                    if (line.trim().startsWith("PROFILE_JSON=")) "PROFILE_JSON=$profileJsonString" else line
+            var updatedText = content
+            updatedText = if (updatedText.contains("GOOGLE_EMAIL=")) {
+                updatedText.lines().joinToString("\n") { line ->
+                    if (line.trim().startsWith("GOOGLE_EMAIL=")) "GOOGLE_EMAIL=$gEmail" else line
                 }
             } else {
-                content + "\nPROFILE_JSON=$profileJsonString\n"
+                updatedText + "\nGOOGLE_EMAIL=$gEmail"
             }
 
-            datFile.writeText(newContent, StandardCharsets.UTF_8)
-            backupFile.writeText(newContent, StandardCharsets.UTF_8)
+            updatedText = if (updatedText.contains("GOOGLE_NAME=")) {
+                updatedText.lines().joinToString("\n") { line ->
+                    if (line.trim().startsWith("GOOGLE_NAME=")) "GOOGLE_NAME=$gName" else line
+                }
+            } else {
+                updatedText + "\nGOOGLE_NAME=$gName"
+            }
+
+            updatedText = if (updatedText.contains("GOOGLE_ID=")) {
+                updatedText.lines().joinToString("\n") { line ->
+                    if (line.trim().startsWith("GOOGLE_ID=")) "GOOGLE_ID=$gId" else line
+                }
+            } else {
+                updatedText + "\nGOOGLE_ID=$gId"
+            }
+
+            updatedText = if (updatedText.contains("GOOGLE_CONNECTED=")) {
+                updatedText.lines().joinToString("\n") { line ->
+                    if (line.trim().startsWith("GOOGLE_CONNECTED=")) "GOOGLE_CONNECTED=$gConnected" else line
+                }
+            } else {
+                updatedText + "\nGOOGLE_CONNECTED=$gConnected"
+            }
+
+            if (profileJsonString.isNotEmpty()) {
+                updatedText = if (updatedText.contains("PROFILE_JSON=")) {
+                    updatedText.lines().joinToString("\n") { line ->
+                        if (line.trim().startsWith("PROFILE_JSON=")) "PROFILE_JSON=$profileJsonString" else line
+                    }
+                } else {
+                    updatedText + "\nPROFILE_JSON=$profileJsonString\n"
+                }
+            }
+
+            // Also keep PIN code synchronized if present in current config
+            val sec = _securityConfig.value
+            if (sec.pinCode.isNotEmpty() || sec.pinHash.isNotEmpty()) {
+                val pinFields = mapOf(
+                    "PIN_CODE=" to sec.pinCode,
+                    "PIN_PASSWORD=" to sec.pinCode,
+                    "PIN_SALT=" to sec.pinSalt,
+                    "PIN_HASH=" to sec.pinHash,
+                    "PIN_ENABLED=" to sec.isPinEnabled.toString()
+                )
+                pinFields.forEach { (prefix, value) ->
+                    updatedText = if (updatedText.contains(prefix)) {
+                        updatedText.lines().joinToString("\n") { line ->
+                            if (line.trim().startsWith(prefix)) "$prefix$value" else line
+                        }
+                    } else {
+                        updatedText + "\n$prefix$value"
+                    }
+                }
+            }
+
+            datFile.writeText(updatedText, StandardCharsets.UTF_8)
+            backupFile.writeText(updatedText, StandardCharsets.UTF_8)
         } catch (e: Throwable) {
             e.printStackTrace()
         }
     }
 
     /**
-     * Helper to extract UserProfile from fingerprint backup content and restore it to local device storage.
+     * Synchronizes 6-digit PIN password, salt, and hash into existing fingerprint.dat and fingerprint_backup.dat files.
+     */
+    fun updateFingerprintPinDataIfRegistered(
+        context: Context,
+        pinCode: String,
+        pinSalt: String,
+        pinHash: String,
+        isPinEnabled: Boolean
+    ) {
+        val fpDir = AppStorageHelper.getFingerprintDir(context)
+        val datFile = File(fpDir, FINGERPRINT_DAT_FILE_NAME)
+        val backupFile = File(fpDir, FINGERPRINT_BACKUP_FILE_NAME)
+        val metaFile = File(fpDir, FINGERPRINT_META_FILE_NAME)
+
+        if (!datFile.exists() && !backupFile.exists()) return
+
+        val targetFile = if (datFile.exists() && datFile.length() > 0) datFile else backupFile
+        if (!targetFile.exists()) return
+
+        try {
+            val content = targetFile.readText(StandardCharsets.UTF_8)
+            var updatedText = content
+            val fieldsToUpdate = mapOf(
+                "PIN_CODE=" to pinCode,
+                "PIN_PASSWORD=" to pinCode,
+                "PIN_SALT=" to pinSalt,
+                "PIN_HASH=" to pinHash,
+                "PIN_ENABLED=" to isPinEnabled.toString()
+            )
+
+            fieldsToUpdate.forEach { (prefix, value) ->
+                updatedText = if (updatedText.contains(prefix)) {
+                    updatedText.lines().joinToString("\n") { line ->
+                        if (line.trim().startsWith(prefix)) "$prefix$value" else line
+                    }
+                } else {
+                    updatedText + "\n$prefix$value"
+                }
+            }
+
+            datFile.writeText(updatedText, StandardCharsets.UTF_8)
+            backupFile.writeText(updatedText, StandardCharsets.UTF_8)
+
+            if (metaFile.exists()) {
+                try {
+                    val metaJson = JSONObject(metaFile.readText(StandardCharsets.UTF_8))
+                    metaJson.put("pinCode", pinCode)
+                    metaJson.put("pinSalt", pinSalt)
+                    metaJson.put("pinHash", pinHash)
+                    metaJson.put("isPinEnabled", isPinEnabled)
+                    metaFile.writeText(metaJson.toString(2), StandardCharsets.UTF_8)
+                } catch (_: Throwable) {}
+            }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Helper to extract UserProfile and Google Account from fingerprint backup content and restore it to local device storage.
      */
     fun extractAndRestoreProfileFromContent(context: Context, content: String): Boolean {
         try {
+            var candidateProfile: UserProfile? = null
+            var lineGoogleEmail = ""
+            var lineGoogleName = ""
+            var lineGoogleId = ""
+            var lineGoogleConnected = false
+
             if (content.trim().startsWith("{")) {
                 val json = JSONObject(content)
                 val profileObj = json.optJSONObject("profile")
                 if (profileObj != null) {
-                    val profile = ProfileManager.jsonToProfile(profileObj.toString(), context)
-                    if (profile != null && profile.isComplete()) {
-                        ProfileManager.restoreProfileFromFingerprint(context, profile)
-                        return true
-                    }
+                    candidateProfile = ProfileManager.jsonToProfile(profileObj.toString(), context)
+                }
+                if (lineGoogleEmail.isEmpty()) {
+                    lineGoogleEmail = json.optString("googleEmail", "")
+                    lineGoogleName = json.optString("googleDisplayName", "")
+                    lineGoogleConnected = json.optBoolean("isGoogleConnected", false)
                 }
             } else {
                 content.lines().forEach { line ->
                     val trimmed = line.trim()
-                    if (trimmed.startsWith("PROFILE_JSON=")) {
-                        val profileJsonStr = trimmed.removePrefix("PROFILE_JSON=").trim()
-                        val profile = ProfileManager.jsonToProfile(profileJsonStr, context)
-                        if (profile != null && profile.isComplete()) {
-                            ProfileManager.restoreProfileFromFingerprint(context, profile)
-                            return true
+                    when {
+                        trimmed.startsWith("PROFILE_JSON=") -> {
+                            val profileJsonStr = trimmed.removePrefix("PROFILE_JSON=").trim()
+                            candidateProfile = ProfileManager.jsonToProfile(profileJsonStr, context)
+                        }
+                        trimmed.startsWith("GOOGLE_EMAIL=") -> {
+                            lineGoogleEmail = trimmed.removePrefix("GOOGLE_EMAIL=").trim()
+                        }
+                        trimmed.startsWith("GOOGLE_NAME=") -> {
+                            lineGoogleName = trimmed.removePrefix("GOOGLE_NAME=").trim()
+                        }
+                        trimmed.startsWith("GOOGLE_ID=") -> {
+                            lineGoogleId = trimmed.removePrefix("GOOGLE_ID=").trim()
+                        }
+                        trimmed.startsWith("GOOGLE_CONNECTED=") -> {
+                            lineGoogleConnected = trimmed.removePrefix("GOOGLE_CONNECTED=").trim().toBoolean()
                         }
                     }
                 }
+            }
+
+            if (candidateProfile != null) {
+                val finalProfile = candidateProfile.copy(
+                    googleEmail = if (candidateProfile.googleEmail.isNotBlank()) candidateProfile.googleEmail else lineGoogleEmail,
+                    googleDisplayName = if (candidateProfile.googleDisplayName.isNotBlank()) candidateProfile.googleDisplayName else lineGoogleName,
+                    googleId = if (candidateProfile.googleId.isNotBlank()) candidateProfile.googleId else lineGoogleId,
+                    isGoogleConnected = candidateProfile.isGoogleConnected || lineGoogleConnected || lineGoogleEmail.isNotBlank()
+                )
+                ProfileManager.restoreProfileFromFingerprint(context, finalProfile)
+                return true
+            } else if (lineGoogleEmail.isNotBlank()) {
+                val current = ProfileManager.userProfile.value ?: UserProfile(device = ProfileManager.getAutoDeviceModel())
+                val finalProfile = current.copy(
+                    googleEmail = lineGoogleEmail,
+                    googleDisplayName = lineGoogleName,
+                    googleId = lineGoogleId,
+                    isGoogleConnected = true
+                )
+                ProfileManager.restoreProfileFromFingerprint(context, finalProfile)
+                return true
+            }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+        }
+        return false
+    }
+
+    /**
+     * Extracts 6-digit PIN password, salt, and hash from fingerprint backup content.
+     * When using fingerprint.dat on another device, this automatically restores the 6-digit password
+     * and enables password lock on this device.
+     */
+    fun extractAndRestorePinFromContent(context: Context, content: String): Boolean {
+        try {
+            var linePinCode = ""
+            var linePinSalt = ""
+            var linePinHash = ""
+            var linePinEnabled: Boolean? = null
+
+            if (content.trim().startsWith("{")) {
+                val json = JSONObject(content)
+                linePinCode = json.optString("pinCode", "")
+                if (linePinCode.isEmpty()) linePinCode = json.optString("password", "")
+                if (linePinCode.isEmpty()) linePinCode = json.optString("pin", "")
+                linePinSalt = json.optString("pinSalt", "")
+                linePinHash = json.optString("pinHash", "")
+                if (json.has("isPinEnabled")) {
+                    linePinEnabled = json.optBoolean("isPinEnabled", false)
+                }
+            } else {
+                content.lines().forEach { line ->
+                    val trimmed = line.trim()
+                    when {
+                        trimmed.startsWith("PIN_CODE=") -> linePinCode = trimmed.removePrefix("PIN_CODE=").trim()
+                        trimmed.startsWith("PIN_PASSWORD=") -> if (linePinCode.isEmpty()) linePinCode = trimmed.removePrefix("PIN_PASSWORD=").trim()
+                        trimmed.startsWith("PIN=") -> if (linePinCode.isEmpty()) linePinCode = trimmed.removePrefix("PIN=").trim()
+                        trimmed.startsWith("PASSWORD=") -> if (linePinCode.isEmpty()) linePinCode = trimmed.removePrefix("PASSWORD=").trim()
+                        trimmed.startsWith("PIN_SALT=") -> linePinSalt = trimmed.removePrefix("PIN_SALT=").trim()
+                        trimmed.startsWith("PIN_HASH=") -> linePinHash = trimmed.removePrefix("PIN_HASH=").trim()
+                        trimmed.startsWith("PIN_ENABLED=") -> linePinEnabled = trimmed.removePrefix("PIN_ENABLED=").trim().toBoolean()
+                        trimmed.startsWith("IS_PIN_ENABLED=") -> linePinEnabled = trimmed.removePrefix("IS_PIN_ENABLED=").trim().toBoolean()
+                    }
+                }
+            }
+
+            if (linePinCode.length == 6 && linePinCode.all { it.isDigit() }) {
+                val finalSalt = if (linePinSalt.isNotEmpty()) linePinSalt else generateSaltHex()
+                val finalHash = if (linePinHash.isNotEmpty()) linePinHash else hashWithSalt(linePinCode, finalSalt)
+
+                try {
+                    val securityDir = AppStorageHelper.getSecurityDir(context)
+                    val pinFile = File(securityDir, PIN_FILE_NAME)
+                    pinFile.writeText("$finalSalt\n$finalHash\n$linePinCode\n# 6-Digit PIN Secure Salt, SHA-256 Hash & Password\n", StandardCharsets.UTF_8)
+                } catch (_: Throwable) {}
+
+                val current = _securityConfig.value
+                val updated = current.copy(
+                    isPinEnabled = true,
+                    pinSalt = finalSalt,
+                    pinHash = finalHash,
+                    pinCode = linePinCode,
+                    failedAttempts = 0,
+                    updatedAt = System.currentTimeMillis()
+                )
+                saveConfig(context, updated)
+                return true
+            } else if (linePinHash.isNotEmpty() && linePinSalt.isNotEmpty() && (linePinEnabled != false)) {
+                try {
+                    val securityDir = AppStorageHelper.getSecurityDir(context)
+                    val pinFile = File(securityDir, PIN_FILE_NAME)
+                    pinFile.writeText("$linePinSalt\n$linePinHash\n# 6-Digit PIN Secure Salt & SHA-256 Hash\n", StandardCharsets.UTF_8)
+                } catch (_: Throwable) {}
+
+                val current = _securityConfig.value
+                val updated = current.copy(
+                    isPinEnabled = true,
+                    pinSalt = linePinSalt,
+                    pinHash = linePinHash,
+                    pinCode = "",
+                    failedAttempts = 0,
+                    updatedAt = System.currentTimeMillis()
+                )
+                saveConfig(context, updated)
+                return true
             }
         } catch (e: Throwable) {
             e.printStackTrace()
@@ -630,8 +958,20 @@ object AppSecurityManager {
         // Unlock the application!
         _isAppUnlocked.value = true
 
-        // Ensure this device has fingerprint enabled and credential registered from the backup
-        val updated = current.copy(
+        // Restore Profile and Profile Photo onto this device from the backup
+        val profileRestored = extractAndRestoreProfileFromContent(context, content)
+        val restoredProf = ProfileManager.userProfile.value
+        val googleSnippet = if (restoredProf != null && restoredProf.googleEmail.isNotBlank()) {
+            " & Google Account (${restoredProf.googleEmail})"
+        } else ""
+
+        // Extract and automatically enable 6-digit password on this device from the backup
+        val pinRestored = extractAndRestorePinFromContent(context, content)
+
+        // Ensure this device has fingerprint enabled, credential registered, and PIN auto-enabled from the backup
+        val currentAfterRestore = _securityConfig.value
+        val updated = currentAfterRestore.copy(
+            isPinEnabled = currentAfterRestore.isPinEnabled || pinRestored,
             isFingerprintEnabled = true,
             isFingerprintRegistered = true,
             fingerprintBackupHash = hash,
@@ -651,16 +991,26 @@ object AppSecurityManager {
             backupFile.writeText(content, StandardCharsets.UTF_8)
         } catch (_: Throwable) {}
 
-        // Restore Profile and Profile Photo onto this device from the backup
-        val profileRestored = extractAndRestoreProfileFromContent(context, content)
-
-        val successMsg = if (profileRestored) {
-            "Backup fingerprint & Profile verified successfully! Account restored with profile."
-        } else {
-            "Backup fingerprint verified successfully! App unlocked."
+        val successMsg = buildString {
+            append("Backup fingerprint verified successfully! ")
+            if (profileRestored) {
+                append("Profile$googleSnippet restored. ")
+            }
+            if (pinRestored) {
+                append("6-Digit Password auto-enabled! ")
+            }
+            append("App unlocked.")
         }
 
         return Pair(true, successMsg)
+    }
+
+    /**
+     * Imports profile and Google account info from a selected fingerprint.dat file without requiring unlock.
+     * Useful for importing credentials while already inside the app.
+     */
+    fun importProfileAndFingerprintFromUri(context: Context, backupFileUri: Uri): Pair<Boolean, String> {
+        return verifyAndUnlockWithBackupFingerprint(context, backupFileUri)
     }
 
     /**

@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
@@ -83,6 +84,7 @@ fun AppLockScreen(
     val context = LocalContext.current
     val securityConfig by AppSecurityManager.securityConfig.collectAsState()
     val scope = rememberCoroutineScope()
+    val userProfile by ProfileManager.userProfile.collectAsState()
 
     var enteredPin by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -90,6 +92,7 @@ fun AppLockScreen(
 
     var showBackupSuccessDialog by remember { mutableStateOf(false) }
     var showResetPinDialog by remember { mutableStateOf(false) }
+    var showFlashBootImportDialog by remember { mutableStateOf(false) }
     var newPinInput by remember { mutableStateOf("") }
     var resetPinError by remember { mutableStateOf<String?>(null) }
 
@@ -236,8 +239,8 @@ fun AppLockScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.padding(top = 40.dp)
             ) {
-                val userProfile = ProfileManager.userProfile.collectAsState().value
-                val profileImageBase64 = userProfile?.profileImageBase64
+                val prof = userProfile
+                val profileImageBase64 = prof?.profileImageBase64
                 val profileBitmap: android.graphics.Bitmap? = remember(profileImageBase64) {
                     if (!profileImageBase64.isNullOrBlank()) {
                         ProfileManager.base64ToBitmap(profileImageBase64)
@@ -262,7 +265,7 @@ fun AppLockScreen(
                             )
                         } else {
                             Icon(
-                                imageVector = if (userProfile != null && userProfile.isComplete()) Icons.Default.Person else Icons.Default.Lock,
+                                imageVector = if (prof != null && prof.isComplete()) Icons.Default.Person else Icons.Default.Lock,
                                 contentDescription = "Lock",
                                 tint = themePrimary,
                                 modifier = Modifier.size(36.dp)
@@ -274,7 +277,7 @@ fun AppLockScreen(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = if (userProfile != null && userProfile.fullName.isNotBlank()) "Welcome, ${userProfile.fullName}" else "Excel & Image Vault",
+                    text = if (prof != null && prof.fullName.isNotBlank()) "Welcome, ${prof.fullName}" else "Excel & Image Vault",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground
@@ -283,7 +286,7 @@ fun AppLockScreen(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Text(
-                    text = if (userProfile != null && userProfile.device.isNotBlank()) "${userProfile.device} • Enter PIN" else "Enter 6-Digit PIN to unlock",
+                    text = if (prof != null && prof.device.isNotBlank()) "${prof.device} • Enter PIN" else "Enter 6-Digit PIN to unlock",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -473,6 +476,35 @@ fun AppLockScreen(
                         color = themePrimary
                     )
                 }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Flash Boot Restore option on Lock Screen
+                Button(
+                    onClick = {
+                        showFlashBootImportDialog = true
+                    },
+                    shape = RoundedCornerShape(24.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                        contentColor = themePrimary
+                    ),
+                    modifier = Modifier.testTag("btn_lockscreen_flash_boot")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ElectricBolt,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = themePrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "⚡ Flash Boot: Restore from External SSD",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = themePrimary
+                    )
+                }
             }
         }
     }
@@ -496,13 +528,47 @@ fun AppLockScreen(
                 Text("Fingerprint Verified!", fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
             },
             text = {
+                val restored = userProfile
+                val isPinAutoEnabled = securityConfig.isPinEnabled
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "Backup fingerprint file was verified successfully. The app is now unlocked.",
                         fontSize = 14.sp
                     )
+                    if (restored != null && restored.fullName.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text(
+                                    "Profile: ${restored.fullName}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (restored.googleEmail.isNotBlank()) {
+                                    Text(
+                                        "Google Account: ${restored.googleEmail}",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF00B894),
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                if (isPinAutoEnabled) {
+                                    Text(
+                                        "6-Digit Password: Auto-enabled & synchronized",
+                                        fontSize = 11.sp,
+                                        color = themePrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                    }
                     Text(
-                        "Would you like to set a new 6-digit PIN for this device?",
+                        if (isPinAutoEnabled) "Your 6-digit password has been auto-enabled. Would you like to change your 6-digit PIN or continue?"
+                        else "Would you like to set a new 6-digit PIN for this device?",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -515,7 +581,7 @@ fun AppLockScreen(
                         showResetPinDialog = true
                     }
                 ) {
-                    Text("Set New PIN")
+                    Text(if (securityConfig.isPinEnabled) "Change PIN" else "Set New PIN")
                 }
             },
             dismissButton = {
@@ -604,6 +670,17 @@ fun AppLockScreen(
                 ) {
                     Text("Skip")
                 }
+            }
+        )
+    }
+
+    if (showFlashBootImportDialog) {
+        com.example.ui.settings.FlashBootImportDialog(
+            onDismiss = { showFlashBootImportDialog = false },
+            onSuccess = { msg ->
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                showFlashBootImportDialog = false
+                onUnlocked()
             }
         )
     }

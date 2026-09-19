@@ -13,11 +13,23 @@ data class UserProfile(
     val pincode: String = "",
     val profileImageBase64: String = "",
     val profileImagePath: String = "",
+    val googleEmail: String = "",
+    val googleDisplayName: String = "",
+    val googleId: String = "",
+    val googleProfilePicUrl: String = "",
+    val isGoogleConnected: Boolean = false,
     val updatedAt: Long = 0L
 ) {
     /**
+     * Checks if a Google account is connected to this profile.
+     */
+    fun isGoogleAccountConnected(): Boolean {
+        return (isGoogleConnected || googleEmail.isNotBlank()) && googleEmail.isNotBlank()
+    }
+
+    /**
      * Checks if all required fields are filled.
-     * All textual profile fields and profile picture are strictly required.
+     * All textual profile fields, profile picture, and Google Account connection are strictly mandatory.
      */
     fun isComplete(): Boolean {
         return fullName.isNotBlank() &&
@@ -30,7 +42,8 @@ data class UserProfile(
                 state.isNotBlank() &&
                 country.isNotBlank() &&
                 pincode.isNotBlank() &&
-                (profileImageBase64.isNotBlank() || profileImagePath.isNotBlank())
+                (profileImageBase64.isNotBlank() || profileImagePath.isNotBlank()) &&
+                isGoogleAccountConnected()
     }
 
     /**
@@ -49,6 +62,7 @@ data class UserProfile(
             state.isBlank() -> "State"
             country.isBlank() -> "Country"
             pincode.isBlank() -> "Pincode"
+            !isGoogleAccountConnected() -> "Connect with Google (Mandatory)"
             else -> null
         }
     }

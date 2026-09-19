@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Key
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Usb
 import androidx.fragment.app.FragmentActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -101,6 +103,7 @@ fun SettingsScreen(
     var showSecurityFolderDialog by remember { mutableStateOf(false) }
     var showManualDialog by remember { mutableStateOf(false) }
     var showProfileDialog by remember { mutableStateOf(false) }
+    var showFlashBootExportDialog by remember { mutableStateOf(false) }
 
     val bioStatus = remember { AppSecurityManager.checkBiometricStatus(context) }
 
@@ -187,10 +190,14 @@ fun SettingsScreen(
                             }
                         }
                         val profile = ProfileManager.userProfile.collectAsState().value
+                        val googleConnected = profile?.isGoogleAccountConnected() == true
                         Text(
-                            if (profile != null && profile.fullName.isNotBlank()) "Linked to: ${profile.fullName} (${profile.phoneNumber})" else "Setup profile with picture, contact & address for security.",
+                            if (profile != null && profile.fullName.isNotBlank()) {
+                                if (googleConnected) "Linked to: ${profile.fullName} • Google: ${profile.googleEmail}"
+                                else "⚠️ ${profile.fullName} • Mandatory: Connect Google Account"
+                            } else "Setup profile with picture, contact, address & mandatory Google account.",
                             fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (!googleConnected) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Button(
@@ -332,7 +339,7 @@ fun SettingsScreen(
 
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            "Register your fingerprint to create a secure backup in Android/media/.../security/fingerprint. You can use this backup file on the lockscreen if you forget your password or open the app on another device.",
+                            "Register your fingerprint to create a secure backup containing your profile, connected Google account, and 6-digit password. When placed on another device, all profile info and your 6-digit password are auto-added and enabled.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -643,6 +650,67 @@ fun SettingsScreen(
                             ),
                             modifier = Modifier.testTag("chip_autolock_$mins")
                         )
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
+
+                // ⚡ FLASH BOOT BUTTON (Only enabled when DAT Vault is Unlocked)
+                val isVaultUnlocked = remember(settings) { com.example.util.FlashBootManager.isDatVaultUnlocked(context) }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isVaultUnlocked) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, if (isVaultUnlocked) MaterialTheme.colorScheme.error.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                    modifier = Modifier.fillMaxWidth().testTag("card_flash_boot")
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.ElectricBolt,
+                                contentDescription = null,
+                                tint = if (isVaultUnlocked) Color(0xFFFFB800) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Flash Boot (SSD Migration)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = if (isVaultUnlocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            if (isVaultUnlocked)
+                                "DAT Vault is unlocked! Encrypt and migrate all Excel data, DAT vault, SShow images, settings, accounts, PINs, and fingerprints to an external SSD/pendrive with a 10-digit password, then wipe this device."
+                            else
+                                "DAT Vault is currently locked. Flash Boot is only available when the DAT Vault is unlocked.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                if (com.example.util.FlashBootManager.isDatVaultUnlocked(context)) {
+                                    showFlashBootExportDialog = true
+                                } else {
+                                    Toast.makeText(context, "Flash Boot is only available when DAT Vault is unlocked!", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            enabled = isVaultUnlocked,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = Color.White,
+                                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("btn_flash_boot_settings")
+                        ) {
+                            Icon(Icons.Default.Usb, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("⚡ Flash Boot to External SSD", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                 }
             }
@@ -1111,6 +1179,12 @@ fun SettingsScreen(
         if (showProfileDialog) {
             ProfileDialog(
                 onDismiss = { showProfileDialog = false }
+            )
+        }
+
+        if (showFlashBootExportDialog) {
+            FlashBootExportDialog(
+                onDismiss = { showFlashBootExportDialog = false }
             )
         }
     }
