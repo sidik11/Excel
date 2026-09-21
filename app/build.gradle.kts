@@ -103,6 +103,7 @@ dependencies {
   implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
+  implementation("com.google.mlkit:face-detection:16.1.7")
   // Uncomment to use Firestore:
   // implementation(libs.firebase.firestore)
 
