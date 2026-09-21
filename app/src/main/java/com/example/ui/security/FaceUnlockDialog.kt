@@ -1,37 +1,29 @@
 package com.example.ui.security
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -42,11 +34,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.util.AppSecurityManager
+import com.example.util.FaceLockStore
+import com.example.util.FaceRecognitionEngine
+import com.example.util.FaceLockStore.MatchResult
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import java.util.concurrent.Executors
 
 @Composable
 fun FaceUnlockDialog(
@@ -55,182 +52,110 @@ fun FaceUnlockDialog(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val coroutineScope = rememberCoroutineScope()
-    val securityConfig by AppSecurityManager.securityConfig.collectAsState()
+    var hasPermission by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+    }
+    var status by remember { mutableStateOf("Look at the front camera to unlock.") }
+    var matched by remember { mutableStateOf(false) }
+    var attempts by remember { mutableIntStateOf(0) }
+    var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    val executor = remember { Executors.newSingleThreadExecutor() }
+    val storedTemplate = remember { FaceLockStore.loadTemplate(context) }
 
-    var isScanning by remember { mutableStateOf(false) }
-    var scanSuccess by remember { mutableStateOf(false) }
-    var scanStatusText by remember { mutableStateOf("Align face within the circle") }
-    var showNotEnrolledPrompt by remember { mutableStateOf(!securityConfig.isFaceEnrolled) }
-    var showSetupDialog by remember { mutableStateOf(false) }
+    val detector = remember {
+        FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .setMinFaceSize(0.15f)
+                .build()
+        )
+    }
 
-    var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
-    var isFrontCameraActive by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { hasPermission = it }
 
-    // Laser animation
-    val infiniteTransition = rememberInfiniteTransition(label = "scan_laser")
-    val laserPosition by infiniteTransition.animateFloat(
-        initialValue = 0.1f,
-        targetValue = 0.9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "laser_pos"
-    )
-
-    fun startFrontCamera(previewView: PreviewView) {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-        cameraProviderFuture.addListener({
-            try {
-                val cameraProvider = cameraProviderFuture.get()
-                cameraProviderRef = cameraProvider
-                cameraProvider.unbindAll()
-
-                val preview = Preview.Builder().build().also {
-                    it.surfaceProvider = previewView.surfaceProvider
-                }
-
-                val cameraSelector = if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
-                    CameraSelector.DEFAULT_FRONT_CAMERA
-                } else {
-                    CameraSelector.DEFAULT_BACK_CAMERA
-                }
-
-                cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview)
-                isFrontCameraActive = true
-            } catch (_: Exception) {
-                isFrontCameraActive = false
-            }
-        }, ContextCompat.getMainExecutor(context))
+    fun stopCamera() {
+        try { provider?.unbindAll() } catch (_: Throwable) {}
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            try {
-                cameraProviderRef?.unbindAll()
-            } catch (_: Throwable) {}
+            stopCamera()
+            try { detector.close() } catch (_: Throwable) {}
+            executor.shutdown()
         }
     }
 
-    fun triggerRealFaceVerification() {
-        if (!securityConfig.isFaceEnrolled) {
-            showNotEnrolledPrompt = true
-            return
-        }
+    fun bindCamera(previewView: PreviewView) {
+        val future = ProcessCameraProvider.getInstance(context)
+        future.addListener({
+            try {
+                val cameraProvider = future.get()
+                provider = cameraProvider
+                cameraProvider.unbindAll()
+                val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
 
-        isScanning = true
-        scanStatusText = "Scanning facial biometric points..."
-
-        val activity = context as? FragmentActivity
-        if (activity != null) {
-            val executor = ContextCompat.getMainExecutor(context)
-            val biometricPrompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    super.onAuthenticationSucceeded(result)
-                    scanSuccess = true
-                    scanStatusText = "Face Match Verified! Unlocking..."
-                    AppSecurityManager.unlockApp()
-                    coroutineScope.launch {
-                        delay(500L)
-                        cameraProviderRef?.unbindAll()
-                        onUnlocked()
+                analysis.setAnalyzer(executor) { imageProxy ->
+                    val mediaImage = imageProxy.image
+                    if (mediaImage == null || matched) {
+                        imageProxy.close()
+                        return@setAnalyzer
                     }
-                }
-
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    super.onAuthenticationError(errorCode, errString)
-                    // If hardware biometric had error or was user cancelled, verify via camera presence
-                    if (errorCode != BiometricPrompt.ERROR_USER_CANCELED && errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON) {
-                        scanStatusText = "$errString. Confirming visual profile..."
-                        coroutineScope.launch {
-                            delay(1200L)
-                            scanSuccess = true
-                            scanStatusText = "Face Match Verified! Unlocking..."
-                            AppSecurityManager.unlockApp()
-                            delay(500L)
-                            cameraProviderRef?.unbindAll()
-                            onUnlocked()
+                    val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                    detector.process(image)
+                        .addOnSuccessListener { faces ->
+                            val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                            if (face != null && !matched) {
+                                val live = FaceRecognitionEngine.vector(face)
+                                val result: MatchResult? = storedTemplate?.let { FaceLockStore.compare(it, live) }
+                                ContextCompat.getMainExecutor(context).execute {
+                                    attempts++
+                                    if (result?.matched == true) {
+                                        matched = true
+                                        status = "Face match verified. Opening vault…"
+                                        stopCamera()
+                                        AppSecurityManager.unlockApp()
+                                        onUnlocked()
+                                    } else if (attempts < 40) {
+                                        status = "Face detected. Matching…"
+                                    } else {
+                                        status = "Face did not match. Re-center and tap Retry."
+                                    }
+                                }
+                            } else if (!matched) {
+                                ContextCompat.getMainExecutor(context).execute {
+                                    status = "No clear face detected. Center your face."
+                                }
+                            }
                         }
-                    } else {
-                        isScanning = false
-                        scanStatusText = "Cancelled. Tap 'Scan Face' to retry or enter PIN."
-                    }
+                        .addOnCompleteListener { imageProxy.close() }
                 }
 
-                override fun onAuthenticationFailed() {
-                    super.onAuthenticationFailed()
-                    scanStatusText = "Face not recognized. Please align properly and retry."
-                    isScanning = false
-                }
-            })
-
-            val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Face Recognition Lock")
-                .setSubtitle("Confirm face match to unlock Vault")
-                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK)
-                .setNegativeButtonText("Use PIN Instead")
-                .build()
-
-            try {
-                biometricPrompt.authenticate(promptInfo)
-            } catch (_: Throwable) {
-                // Fallback: visual liveness scan
-                coroutineScope.launch {
-                    delay(1200L)
-                    scanSuccess = true
-                    scanStatusText = "Face Match Verified! Unlocking..."
-                    AppSecurityManager.unlockApp()
-                    delay(500L)
-                    cameraProviderRef?.unbindAll()
-                    onUnlocked()
-                }
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_FRONT_CAMERA,
+                    preview,
+                    analysis
+                )
+            } catch (e: Throwable) {
+                status = "Could not start front camera: ${e.message}"
             }
-        } else {
-            coroutineScope.launch {
-                delay(1200L)
-                scanSuccess = true
-                scanStatusText = "Face Match Verified! Unlocking..."
-                AppSecurityManager.unlockApp()
-                delay(500L)
-                cameraProviderRef?.unbindAll()
-                onUnlocked()
-            }
-        }
+        }, ContextCompat.getMainExecutor(context))
     }
 
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            triggerRealFaceVerification()
+    LaunchedEffect(hasPermission, storedTemplate) {
+        if (!hasPermission) return@LaunchedEffect
+        if (storedTemplate == null) {
+            status = "No registered face template was found. Set up Face Lock first."
         } else {
-            scanStatusText = "Camera permission denied. Use PIN to unlock."
+            delay(350)
         }
-    }
-
-    LaunchedEffect(Unit) {
-        if (!securityConfig.isFaceEnrolled) {
-            showNotEnrolledPrompt = true
-        } else {
-            val hasCam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-            if (hasCam) {
-                triggerRealFaceVerification()
-            } else {
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            }
-        }
-    }
-
-    if (showSetupDialog) {
-        FaceLockSetupDialog(
-            onDismiss = { showSetupDialog = false },
-            onEnrolled = {
-                showSetupDialog = false
-                showNotEnrolledPrompt = false
-                triggerRealFaceVerification()
-            }
-        )
     }
 
     Dialog(
@@ -238,229 +163,78 @@ fun FaceUnlockDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .clip(RoundedCornerShape(24.dp))
+            modifier = Modifier.fillMaxWidth(0.92f).wrapContentHeight().clip(RoundedCornerShape(24.dp))
                 .testTag("face_unlock_dialog"),
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 10.dp
+            tonalElevation = 8.dp
         ) {
             Column(
-                modifier = Modifier
-                    .padding(24.dp)
-                    .fillMaxWidth(),
+                modifier = Modifier.padding(22.dp).fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Face,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
+                        Surface(CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
+                            Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Face, null, tint = MaterialTheme.colorScheme.primary) }
                         }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "Face Recognition Lock",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 17.sp
-                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text("Face Unlock", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                            Text("Camera-only verification", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                    IconButton(
-                        onClick = {
-                            cameraProviderRef?.unbindAll()
-                            onDismiss()
-                        },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
-                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(Modifier.height(18.dp))
 
-                if (showNotEnrolledPrompt) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            "Face Lock Not Set Up",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            "You must first set up and calibrate your face biometric before using Face Unlock.",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 12.dp)
-                        )
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Button(
-                            onClick = { showSetupDialog = true },
-                            modifier = Modifier.fillMaxWidth().testTag("btn_open_face_setup_from_unlock"),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Set Up Face Lock Now", fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = onDismiss,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Enter PIN Instead")
-                        }
+                when {
+                    !hasPermission -> {
+                        Text("Camera permission is required. Fingerprint is not used by Face Unlock.", textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(14.dp))
+                        Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Allow Camera") }
                     }
-                } else {
-                    // Circular HUD with Live Front Camera
-                    Box(
-                        modifier = Modifier
-                            .size(220.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF0F172A))
-                            .border(
-                                3.dp,
-                                if (scanSuccess) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
-                                CircleShape
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        // Live Camera View
-                        val hasCamPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                        if (hasCamPerm) {
+                    storedTemplate == null -> {
+                        Text("No Face Lock template is available on this device.", textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(14.dp))
+                        OutlinedButton(onClick = onDismiss) { Text("Close") }
+                    }
+                    else -> {
+                        Box(
+                            modifier = Modifier.size(260.dp).clip(CircleShape)
+                                .background(Color.Black)
+                                .border(3.dp, if (matched) Color(0xFF10B981) else MaterialTheme.colorScheme.primary, CircleShape)
+                        ) {
                             AndroidView(
-                                factory = { ctx ->
-                                    PreviewView(ctx).apply {
-                                        scaleType = PreviewView.ScaleType.FILL_CENTER
-                                        startFrontCamera(this)
-                                    }
-                                },
+                                factory = { PreviewView(context).also { bindCamera(it) } },
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
-
-                        // HUD Overlay
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val strokeWidth = 4.dp.toPx()
-                            val ovalWidth = size.width * 0.72f
-                            val ovalHeight = size.height * 0.85f
-                            val topLeftX = (size.width - ovalWidth) / 2f
-                            val topLeftY = (size.height - ovalHeight) / 2f
-
-                            drawOval(
-                                color = if (scanSuccess) Color(0xFF10B981) else Color(0xFF38BDF8).copy(alpha = 0.6f),
-                                topLeft = Offset(topLeftX, topLeftY),
-                                size = Size(ovalWidth, ovalHeight),
-                                style = Stroke(width = strokeWidth)
-                            )
-
-                            if (isScanning && !scanSuccess) {
-                                val laserY = topLeftY + ovalHeight * laserPosition
-                                drawLine(
-                                    brush = Brush.horizontalGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            Color(0xFF06B6D4),
-                                            Color(0xFF67E8F9),
-                                            Color(0xFF06B6D4),
-                                            Color.Transparent
-                                        )
-                                    ),
-                                    start = Offset(topLeftX, laserY),
-                                    end = Offset(topLeftX + ovalWidth, laserY),
-                                    strokeWidth = 5.dp.toPx(),
-                                    cap = StrokeCap.Round
-                                )
-                            }
+                        Spacer(Modifier.height(16.dp))
+                        Text(status, textAlign = TextAlign.Center, fontSize = 13.sp)
+                        Spacer(Modifier.height(10.dp))
+                        if (!matched && attempts >= 40) {
+                            Button(
+                                onClick = {
+                                    attempts = 0
+                                    status = "Retrying face match…"
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("btn_trigger_face_scan")
+                            ) { Text("Retry Face Scan") }
+                        } else if (matched) {
+                            Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Open") }
                         }
-
-                        if (scanSuccess) {
-                            Surface(
-                                shape = CircleShape,
-                                color = Color(0xFF10B981).copy(alpha = 0.9f),
-                                modifier = Modifier.size(64.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.Check,
-                                        contentDescription = "Success",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(36.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Text(
-                        text = scanStatusText,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (scanSuccess) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 16.dp)
-                    )
-
-                    Spacer(modifier = Modifier.height(22.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                cameraProviderRef?.unbindAll()
-                                onDismiss()
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Use PIN")
-                        }
-
-                        Button(
-                            onClick = {
-                                val hasCam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                                if (hasCam) {
-                                    triggerRealFaceVerification()
-                                } else {
-                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                }
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("btn_trigger_face_scan"),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text(if (scanSuccess) "Verified" else "Scan Face", fontWeight = FontWeight.Bold)
-                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Face Lock uses the encrypted local facial template in Android/media/${context.packageName}/facelock. It does not call the fingerprint biometric prompt.",
+                            textAlign = TextAlign.Center,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
