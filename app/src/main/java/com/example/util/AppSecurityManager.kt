@@ -1047,7 +1047,10 @@ object AppSecurityManager {
     /**
      * Enrolls user's face credential. Sets isFaceEnrolled = true and isFaceLockEnabled = true.
      */
-    fun enrollFace(context: Context): Pair<Boolean, String> {
+    fun enrollFace(context: Context, faceTemplate: List<Float>): Pair<Boolean, String> {
+        val (saved, saveMessage) = FaceLockStore.saveTemplate(context, faceTemplate)
+        if (!saved) return Pair(false, saveMessage)
+
         val current = _securityConfig.value
         val now = System.currentTimeMillis()
         val updated = current.copy(
@@ -1058,14 +1061,21 @@ object AppSecurityManager {
         )
         saveConfig(context, updated)
         SettingsManager.setFaceLockEnabled(true)
+        // Keep the existing fingerprint backup in sync when fingerprint is
+        // registered; Face Lock itself does not require fingerprint.
         updateFingerprintProfileDataIfRegistered(context)
-        return Pair(true, "Face recognition enrolled and verified successfully!")
+        return Pair(true, "Face recognition enrolled successfully.")
     }
+
+    // Backward-compatible guard: face enrollment must provide a real camera template.
+    fun enrollFace(context: Context): Pair<Boolean, String> =
+        Pair(false, "Face enrollment requires a live camera template.")
 
     /**
      * Removes enrolled face credential.
      */
     fun removeEnrolledFace(context: Context) {
+        FaceLockStore.clear(context)
         val current = _securityConfig.value
         val updated = current.copy(
             isFaceLockEnabled = false,
