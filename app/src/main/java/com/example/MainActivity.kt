@@ -12,6 +12,7 @@ import com.example.ui.MainScreen
 import com.example.ui.security.AppLockScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.AppSecurityManager
+import com.example.util.FirebaseBridgeManager
 import com.example.util.ProfileManager
 import com.example.util.SettingsManager
 
@@ -27,6 +28,7 @@ class MainActivity : FragmentActivity() {
         SettingsManager.init(this)
         AppSecurityManager.init(this)
         ProfileManager.init(this)
+        FirebaseBridgeManager.init(this)
 
         setContent {
             MyApplicationTheme {
