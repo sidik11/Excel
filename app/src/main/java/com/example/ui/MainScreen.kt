@@ -346,6 +346,11 @@ fun MainScreen(
 
                 MainAppTab.SETTINGS -> {
                     SettingsScreen(
+                        onRestoreComplete = {
+                            viewModel.reloadPersistedData()
+                            vaultViewModel.reloadSession()
+                            sshowViewModel.checkStoredImages()
+                        },
                         modifier = Modifier.weight(1f)
                     )
                 }

@@ -2,6 +2,7 @@ package com.example.util
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.provider.DocumentsContract
 import android.util.Base64
 import coil.Coil
@@ -968,6 +969,132 @@ object VaultManager {
                 } catch (_: Exception) {}
             }
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Completely deletes the EX Vault folder itself and all files within it across SAF, file directories,
+     * external storage, internal storage, and dedicated media folders.
+     */
+    suspend fun deleteExVaultFolderCompletely(
+        context: Context,
+        exVaultUri: Uri? = null,
+        parentFolderUri: Uri? = null
+    ) = withContext(Dispatchers.IO) {
+        // 1. Delete from provided URI or active session URI
+        val targetUri = exVaultUri ?: VaultSessionManager.getSession(context).exVaultUri
+
+        if (targetUri != null) {
+            if (targetUri.scheme == "file") {
+                try {
+                    val dir = File(targetUri.path ?: "")
+                    if (dir.exists()) {
+                        dir.deleteRecursively()
+                    }
+                } catch (_: Throwable) {}
+            } else {
+                try {
+                    val docId = DocumentsContract.getDocumentId(targetUri)
+                    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(targetUri, docId)
+                    val projection = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val docUrisToDelete = mutableListOf<Uri>()
+
+                    context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                        val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                        while (cursor.moveToNext()) {
+                            val childId = cursor.getString(idCol)
+                            docUrisToDelete.add(DocumentsContract.buildDocumentUriUsingTree(targetUri, childId))
+                        }
+                    }
+
+                    for (childDocUri in docUrisToDelete) {
+                        try {
+                            DocumentsContract.deleteDocument(context.contentResolver, childDocUri)
+                        } catch (_: Throwable) {}
+                    }
+
+                    // Delete the folder document itself
+                    try {
+                        DocumentsContract.deleteDocument(context.contentResolver, targetUri)
+                    } catch (_: Throwable) {}
+                } catch (_: Throwable) {}
+            }
+        }
+
+        // 2. Scan parent document tree for any "EX Vault" or "EX_Vault" directory documents and delete them
+        val treeUri = parentFolderUri ?: VaultSessionManager.getSession(context).datUri
+        if (treeUri != null && treeUri.scheme != "file") {
+            try {
+                val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, rootDocId)
+                val projection = arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE
+                )
+
+                val exVaultDocUris = mutableListOf<Uri>()
+                context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameCol)
+                        val mime = cursor.getString(mimeCol)
+                        if ((name == "EX Vault" || name == "EX_Vault") && mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            val childId = cursor.getString(idCol)
+                            exVaultDocUris.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, childId))
+                        }
+                    }
+                }
+
+                for (folderDocUri in exVaultDocUris) {
+                    try {
+                        val fDocId = DocumentsContract.getDocumentId(folderDocUri)
+                        val fChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(folderDocUri, fDocId)
+                        val childIds = mutableListOf<Uri>()
+                        context.contentResolver.query(fChildrenUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.use { c ->
+                            val col = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                            while (c.moveToNext()) {
+                                childIds.add(DocumentsContract.buildDocumentUriUsingTree(folderDocUri, c.getString(col)))
+                            }
+                        }
+                        childIds.forEach { try { DocumentsContract.deleteDocument(context.contentResolver, it) } catch (_: Throwable) {} }
+                        DocumentsContract.deleteDocument(context.contentResolver, folderDocUri)
+                    } catch (_: Throwable) {}
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // 3. Scan and delete all filesystem directory targets
+        val targetDirs = listOf(
+            AppStorageHelper.getExVaultDir(context),
+            File(AppStorageHelper.getDedicatedMediaDir(context), "EX Vault"),
+            File(AppStorageHelper.getDedicatedMediaDir(context), "EX_Vault"),
+            File(context.filesDir, "EX Vault"),
+            File(context.filesDir, "EX_Vault"),
+            File(context.cacheDir, "EX Vault"),
+            File(context.cacheDir, "EX_Vault"),
+            context.getExternalFilesDir(null)?.let { File(it, "EX Vault") },
+            context.getExternalFilesDir(null)?.let { File(it, "EX_Vault") },
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "EX Vault"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "EX_Vault"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "EX Vault"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "EX_Vault"),
+            File(Environment.getExternalStorageDirectory(), "EX Vault"),
+            File(Environment.getExternalStorageDirectory(), "EX_Vault")
+        )
+
+        for (dir in targetDirs) {
+            try {
+                if (dir != null && dir.exists()) {
+                    dir.deleteRecursively()
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // 4. Clean memory and cache
+        cleanExtractedFiles(context)
+        AppStorageHelper.clearTempWorkspaces(context)
     }
 
     fun cleanExtractedFiles(context: Context) {

@@ -1,6 +1,8 @@
 package com.example.ui.security
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -92,7 +94,6 @@ fun AppLockScreen(
 
     var showBackupSuccessDialog by remember { mutableStateOf(false) }
     var showResetPinDialog by remember { mutableStateOf(false) }
-    var showFlashBootImportDialog by remember { mutableStateOf(false) }
     var newPinInput by remember { mutableStateOf("") }
     var resetPinError by remember { mutableStateOf<String?>(null) }
 
@@ -478,33 +479,6 @@ fun AppLockScreen(
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
-
-                // Flash Boot Restore option on Lock Screen
-                Button(
-                    onClick = {
-                        showFlashBootImportDialog = true
-                    },
-                    shape = RoundedCornerShape(24.dp),
-                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
-                        contentColor = themePrimary
-                    ),
-                    modifier = Modifier.testTag("btn_lockscreen_flash_boot")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ElectricBolt,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = themePrimary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "⚡ Flash Boot: Restore from External SSD",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = themePrimary
-                    )
-                }
             }
         }
     }
@@ -670,17 +644,6 @@ fun AppLockScreen(
                 ) {
                     Text("Skip")
                 }
-            }
-        )
-    }
-
-    if (showFlashBootImportDialog) {
-        com.example.ui.settings.FlashBootImportDialog(
-            onDismiss = { showFlashBootImportDialog = false },
-            onSuccess = { msg ->
-                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                showFlashBootImportDialog = false
-                onUnlocked()
             }
         )
     }

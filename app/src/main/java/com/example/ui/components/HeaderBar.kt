@@ -44,6 +44,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,7 +53,9 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.theme.AccentGreen
 import com.example.ui.theme.DarkBorder
 import com.example.ui.theme.PrimaryBlue
+import com.example.util.AppStorageHelper
 import com.example.util.ProfileManager
+import com.example.util.SettingsManager
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -67,6 +70,7 @@ fun HeaderBar(
     onOpenProfile: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
 
     Column(
@@ -75,6 +79,18 @@ fun HeaderBar(
             .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 20.dp, vertical = 14.dp)
     ) {
+        val settings by SettingsManager.settings.collectAsState()
+        val customLogoBitmap = remember(settings.customAppLogoTimestamp) {
+            val file = AppStorageHelper.getAppLogoFile(context)
+            if (file.exists() && file.length() > 0) {
+                try {
+                    android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                } catch (_: Throwable) {
+                    null
+                }
+            } else null
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -84,14 +100,24 @@ fun HeaderBar(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(
                         color = AccentGreen.copy(alpha = 0.18f),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.size(26.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.size(32.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Text("X", color = AccentGreen, fontWeight = FontWeight.Black, fontSize = 14.sp)
+                            if (customLogoBitmap != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = customLogoBitmap.asImageBitmap(),
+                                    contentDescription = "App Logo",
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                            } else {
+                                Text("X", color = AccentGreen, fontWeight = FontWeight.Black, fontSize = 16.sp)
+                            }
                         }
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = "Excel & Image Vault",
                         fontSize = 20.sp,
@@ -99,12 +125,6 @@ fun HeaderBar(
                         color = MaterialTheme.colorScheme.onBackground
                     )
                 }
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Filter images by NAME & COLOUR from Excel, or switch to DAT Vault.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {

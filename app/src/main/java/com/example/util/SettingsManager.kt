@@ -29,6 +29,10 @@ object SettingsManager {
     private const val KEY_HAPTIC_FEEDBACK = "key_haptic_feedback"
     private const val KEY_CLEAN_EX_ON_LOCK = "key_clean_ex_on_lock"
     private const val KEY_SLIDESHOW_TRANSITION = "key_slideshow_transition"
+    private const val KEY_RECENT_APP_PRIVACY = "key_recent_app_privacy"
+    private const val KEY_APP_LOGO_TS = "key_custom_app_logo_ts"
+    private const val KEY_FB_CONNECTED = "key_fb_connected"
+    private const val KEY_FB_USERNAME = "key_fb_username"
 
     private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -68,6 +72,10 @@ object SettingsManager {
         val haptic = p.getBoolean(KEY_HAPTIC_FEEDBACK, true)
         val cleanEx = p.getBoolean(KEY_CLEAN_EX_ON_LOCK, true)
         val transition = p.getString(KEY_SLIDESHOW_TRANSITION, "fade") ?: "fade"
+        val recentPrivacy = p.getBoolean(KEY_RECENT_APP_PRIVACY, true)
+        val logoTs = p.getLong(KEY_APP_LOGO_TS, 0L)
+        val fbConnected = p.getBoolean(KEY_FB_CONNECTED, false)
+        val fbUser = p.getString(KEY_FB_USERNAME, "") ?: ""
 
         _settings.value = AppSettings(
             theme = theme,
@@ -88,7 +96,11 @@ object SettingsManager {
             showFileInfoOverlay = showInfo,
             hapticFeedback = haptic,
             cleanExVaultOnLock = cleanEx,
-            slideshowTransition = transition
+            slideshowTransition = transition,
+            recentAppPrivacy = recentPrivacy,
+            customAppLogoTimestamp = logoTs,
+            facebookConnected = fbConnected,
+            facebookUserName = fbUser
         )
     }
 
@@ -185,5 +197,20 @@ object SettingsManager {
     fun setSlideshowTransition(transition: String) {
         prefs?.edit()?.putString(KEY_SLIDESHOW_TRANSITION, transition)?.apply()
         _settings.value = _settings.value.copy(slideshowTransition = transition)
+    }
+
+    fun setRecentAppPrivacy(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(KEY_RECENT_APP_PRIVACY, enabled)?.apply()
+        _settings.value = _settings.value.copy(recentAppPrivacy = enabled)
+    }
+
+    fun setCustomAppLogoTimestamp(timestamp: Long) {
+        prefs?.edit()?.putLong(KEY_APP_LOGO_TS, timestamp)?.apply()
+        _settings.value = _settings.value.copy(customAppLogoTimestamp = timestamp)
+    }
+
+    fun setFacebookConnected(connected: Boolean, userName: String = "") {
+        prefs?.edit()?.putBoolean(KEY_FB_CONNECTED, connected)?.putString(KEY_FB_USERNAME, userName)?.apply()
+        _settings.value = _settings.value.copy(facebookConnected = connected, facebookUserName = userName)
     }
 }

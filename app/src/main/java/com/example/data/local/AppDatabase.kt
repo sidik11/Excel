@@ -66,6 +66,12 @@ interface ConfigDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun set(config: AppConfigEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(configs: List<AppConfigEntity>)
+
+    @Query("SELECT * FROM app_config")
+    suspend fun getAllList(): List<AppConfigEntity>
+
     @Query("DELETE FROM app_config WHERE key = :key")
     suspend fun remove(key: String)
 

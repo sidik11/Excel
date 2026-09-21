@@ -45,6 +45,12 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.FolderSpecial
+import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Brush
 import androidx.fragment.app.FragmentActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -91,6 +97,7 @@ import com.example.util.SettingsManager
 
 @Composable
 fun SettingsScreen(
+    onRestoreComplete: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val settings by SettingsManager.settings.collectAsState()
@@ -103,7 +110,10 @@ fun SettingsScreen(
     var showSecurityFolderDialog by remember { mutableStateOf(false) }
     var showManualDialog by remember { mutableStateOf(false) }
     var showProfileDialog by remember { mutableStateOf(false) }
-    var showFlashBootExportDialog by remember { mutableStateOf(false) }
+    var showPathsDialog by remember { mutableStateOf(false) }
+    var showLogoDialog by remember { mutableStateOf(false) }
+    var showShareQrDialog by remember { mutableStateOf(false) }
+    var showDualVaultDialog by remember { mutableStateOf(false) }
 
     val bioStatus = remember { AppSecurityManager.checkBiometricStatus(context) }
 
@@ -655,61 +665,95 @@ fun SettingsScreen(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
 
-                // ⚡ FLASH BOOT BUTTON (Only enabled when DAT Vault is Unlocked)
-                val isVaultUnlocked = remember(settings) { com.example.util.FlashBootManager.isDatVaultUnlocked(context) }
+                // 🛡️ RECENT APP PRIVACY (Masks overview in multitasking switcher)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Recent App Privacy (Switcher Blur)", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(
+                            "Mask and blank app screen in Android Recent Apps overview & switcher.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.recentAppPrivacy,
+                        onCheckedChange = { SettingsManager.setRecentAppPrivacy(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.testTag("toggle_recent_app_privacy")
+                    )
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
+
+                // 📁 SHOW CONNECTED PATHS (PIN / Fingerprint protected)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Show Connected Paths", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(
+                            "PIN / Fingerprint protected. View all media, vault, and database folder paths.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = { showPathsDialog = true },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("btn_show_paths")
+                    ) {
+                        Icon(Icons.Default.FolderSpecial, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Show Paths", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
+
+                // 🤝 DUAL USER COMBINED VAULT (Firebase Bridge)
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = if (isVaultUnlocked) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(1.dp, if (isVaultUnlocked) MaterialTheme.colorScheme.error.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
-                    modifier = Modifier.fillMaxWidth().testTag("card_flash_boot")
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth().testTag("card_dual_vault_connect")
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(modifier = Modifier.padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                Icons.Default.ElectricBolt,
+                                Icons.Default.Group,
                                 contentDescription = null,
-                                tint = if (isVaultUnlocked) Color(0xFFFFB800) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp)
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "Flash Boot (SSD Migration)",
+                                "Dual User Combined Vault",
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = if (isVaultUnlocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            if (isVaultUnlocked)
-                                "DAT Vault is unlocked! Encrypt and migrate all Excel data, DAT vault, SShow images, settings, accounts, PINs, and fingerprints to an external SSD/pendrive with a 10-digit password, then wipe this device."
-                            else
-                                "DAT Vault is currently locked. Flash Boot is only available when the DAT Vault is unlocked.",
+                            "Pair with another user via 10-digit code using Firebase bridge. All photos stored securely in Android/media/Dual_Vault without storing images on cloud.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Button(
-                            onClick = {
-                                if (com.example.util.FlashBootManager.isDatVaultUnlocked(context)) {
-                                    showFlashBootExportDialog = true
-                                } else {
-                                    Toast.makeText(context, "Flash Boot is only available when DAT Vault is unlocked!", Toast.LENGTH_LONG).show()
-                                }
-                            },
-                            enabled = isVaultUnlocked,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = Color.White,
-                                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            ),
+                            onClick = { showDualVaultDialog = true },
                             shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth().testTag("btn_flash_boot_settings")
+                            modifier = Modifier.fillMaxWidth().testTag("btn_connect_other_user")
                         ) {
-                            Icon(Icons.Default.Usb, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("⚡ Flash Boot to External SSD", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Connect with Other User (Show / Enter Code)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                 }
@@ -1145,6 +1189,75 @@ fun SettingsScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // SECTION 7: 🎨 App Branding & QR Sharing
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier.fillMaxWidth().testTag("section_branding_share")
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Brush, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("App Branding & Quick Share", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = MaterialTheme.colorScheme.primary)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Set / Change App Logo", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(
+                            "Select custom branding photo or restore standard vector icon.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { showLogoDialog = true },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("btn_settings_change_logo")
+                    ) {
+                        Icon(Icons.Default.Palette, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Change", fontSize = 12.sp)
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Scan & Download App QR Code", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(
+                            "Scan from another phone to immediately download or open this application.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = { showShareQrDialog = true },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("btn_settings_show_qr")
+                    ) {
+                        Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Show QR", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
         if (showPinDialog) {
             PinManagementDialog(
                 isExistingPinSet = securityConfig.isPinEnabled,
@@ -1182,9 +1295,27 @@ fun SettingsScreen(
             )
         }
 
-        if (showFlashBootExportDialog) {
-            FlashBootExportDialog(
-                onDismiss = { showFlashBootExportDialog = false }
+        if (showPathsDialog) {
+            ConnectedPathsDialog(
+                onDismiss = { showPathsDialog = false }
+            )
+        }
+
+        if (showLogoDialog) {
+            AppLogoDialog(
+                onDismiss = { showLogoDialog = false }
+            )
+        }
+
+        if (showShareQrDialog) {
+            ShareAppQrDialog(
+                onDismiss = { showShareQrDialog = false }
+            )
+        }
+
+        if (showDualVaultDialog) {
+            DualVaultConnectDialog(
+                onDismiss = { showDualVaultDialog = false }
             )
         }
     }

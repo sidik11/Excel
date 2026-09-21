@@ -57,6 +57,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         restorePersistedSession()
     }
 
+    fun reloadPersistedData() {
+        restorePersistedSession()
+    }
+
     private fun restorePersistedSession() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, loadingMessage = "Loading offline cache…") }

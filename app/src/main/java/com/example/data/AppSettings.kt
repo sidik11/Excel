@@ -28,5 +28,9 @@ data class AppSettings(
     val showFileInfoOverlay: Boolean = true,
     val hapticFeedback: Boolean = true,
     val cleanExVaultOnLock: Boolean = true,
-    val slideshowTransition: String = "fade" // "fade", "slide", "instant"
+    val slideshowTransition: String = "fade", // "fade", "slide", "instant"
+    val recentAppPrivacy: Boolean = true,
+    val customAppLogoTimestamp: Long = 0L,
+    val facebookConnected: Boolean = false,
+    val facebookUserName: String = ""
 )

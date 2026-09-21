@@ -92,6 +92,10 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
         restoreSessionIfActive()
     }
 
+    fun reloadSession() {
+        restoreSessionIfActive()
+    }
+
     private fun restoreSessionIfActive() {
         val context = getApplication<Application>()
         viewModelScope.launch {

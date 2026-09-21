@@ -1,6 +1,7 @@
 package com.example.ui.profile
 
 import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
@@ -15,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -81,6 +83,7 @@ import com.example.data.local.UserProfile
 import com.example.util.AppSecurityManager
 import com.example.util.GoogleAuthHelper
 import com.example.util.ProfileManager
+import com.example.util.SettingsManager
 import java.io.File
 
 @Composable
@@ -124,9 +127,10 @@ fun ProfileDialog(
 
     var validationError by remember { mutableStateOf<String?>(null) }
     var showManualGoogleDialog by remember { mutableStateOf(false) }
-    var showFlashBootImportDialog by remember { mutableStateOf(false) }
+    var showFacebookDialog by remember { mutableStateOf(false) }
     var manualGoogleEmailInput by remember { mutableStateOf("") }
     var manualGoogleNameInput by remember { mutableStateOf("") }
+    var facebookUsernameInput by remember { mutableStateOf("") }
 
     // Sync fields if currentProfile changes externally (e.g. from fingerprint import or account connect)
     LaunchedEffect(currentProfile) {
@@ -213,12 +217,12 @@ fun ProfileDialog(
         onDismissRequest = {
             if (!isMandatorySetup) onDismiss()
         },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = !isMandatorySetup,
-            dismissOnClickOutside = !isMandatorySetup
-        )
-    ) {
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = !isMandatorySetup,
+                dismissOnClickOutside = !isMandatorySetup
+            )
+        ) {
         Surface(
             modifier = modifier
                 .fillMaxWidth(0.95f)
@@ -317,46 +321,6 @@ fun ProfileDialog(
                             )
                             Text(
                                 "Restores all profile and Google account info automatically",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-
-                // Flash Boot Restore option (Cross-Device SSD Migration)
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp)
-                        .clickable {
-                            showFlashBootImportDialog = true
-                        }
-                        .testTag("btn_profile_flash_boot_restore")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.ElectricBolt,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "⚡ Flash Boot: Restore from External SSD",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                "Load existing settings, catalog, DAT vault, accounts & auto-delete package",
                                 fontSize = 10.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -629,6 +593,64 @@ fun ProfileDialog(
                     }
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Optional Facebook Account Card
+                val appSettings by SettingsManager.settings.collectAsState()
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, Color(0xFF1877F2).copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_facebook_logo),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "Facebook Account (Optional)",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (appSettings.facebookConnected) "Connected: ${appSettings.facebookUserName}" else "Optional social account link",
+                                        fontSize = 11.sp,
+                                        color = if (appSettings.facebookConnected) Color(0xFF1877F2) else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (appSettings.facebookConnected) {
+                                TextButton(
+                                    onClick = { SettingsManager.setFacebookConnected(false, "") },
+                                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                ) {
+                                    Text("Disconnect", fontSize = 11.sp)
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { showFacebookDialog = true },
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.testTag("btn_connect_facebook")
+                                ) {
+                                    Text("Connect", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(6.dp))
 
                 // Validation Error Banner
@@ -670,6 +692,10 @@ fun ProfileDialog(
                         ProfileDetailItem(label = "Country", value = country)
                         ProfileDetailItem(label = "Pincode", value = pincode)
                         ProfileDetailItem(label = "Google Account", value = googleEmail)
+                        ProfileDetailItem(
+                            label = "Facebook (Optional)",
+                            value = if (appSettings.facebookConnected) appSettings.facebookUserName else "Not linked"
+                        )
 
                         Spacer(modifier = Modifier.height(12.dp))
 
@@ -976,21 +1002,60 @@ fun ProfileDialog(
                 }
             }
         )
+    }
 
-        if (showFlashBootImportDialog) {
-            com.example.ui.settings.FlashBootImportDialog(
-                onDismiss = { showFlashBootImportDialog = false },
-                onSuccess = { msg ->
-                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                    showFlashBootImportDialog = false
-                    val restored = com.example.util.ProfileManager.userProfile.value
-                    if (restored != null && restored.isComplete()) {
-                        isEditMode = false
-                        onDismiss()
-                    }
+    // Optional Facebook Account Connect Dialog
+    if (showFacebookDialog) {
+        AlertDialog(
+            onDismissRequest = { showFacebookDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_facebook_logo),
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Connect Facebook", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
-            )
-        }
+            },
+            text = {
+                Column {
+                    Text(
+                        "Link your Facebook profile name or username (optional):",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = facebookUsernameInput,
+                        onValueChange = { facebookUsernameInput = it },
+                        label = { Text("Facebook Username or Name") },
+                        placeholder = { Text("e.g. Alex Miller") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("input_facebook_username")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = facebookUsernameInput.trim().ifEmpty { "Connected User" }
+                        SettingsManager.setFacebookConnected(true, name)
+                        showFacebookDialog = false
+                        Toast.makeText(context, "Facebook account linked!", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.testTag("btn_confirm_facebook")
+                ) {
+                    Text("Link Account")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFacebookDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

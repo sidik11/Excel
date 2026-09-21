@@ -121,6 +121,22 @@ object AppStorageHelper {
     }
 
     /**
+     * Dedicated folder for Dual Combined Vault storage in Android/media/<packageName>/Dual_Vault.
+     */
+    fun getDualVaultDir(context: Context): File {
+        val dir = File(getDedicatedMediaDir(context), "Dual_Vault")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /**
+     * Dedicated custom app logo file in Android/media/<packageName>/app_logo.png.
+     */
+    fun getAppLogoFile(context: Context): File {
+        return File(getDedicatedMediaDir(context), "app_logo.png")
+    }
+
+    /**
      * Calculate total storage occupied by dedicated folders.
      */
     fun getTotalStorageSizeBytes(context: Context): Long {

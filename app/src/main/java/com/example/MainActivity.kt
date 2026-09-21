@@ -32,10 +32,11 @@ class MainActivity : FragmentActivity() {
             MyApplicationTheme {
                 val isUnlocked by AppSecurityManager.isAppUnlocked.collectAsState()
                 val securityConfig by AppSecurityManager.securityConfig.collectAsState()
+                val settings by SettingsManager.settings.collectAsState()
 
-                // Apply Anti-Screenshot and Screen Recording prevention
-                LaunchedEffect(securityConfig.isAntiScreenshotEnabled) {
-                    if (securityConfig.isAntiScreenshotEnabled) {
+                // Apply Anti-Screenshot and Recent App Privacy protection (masks Recent Apps switcher)
+                LaunchedEffect(securityConfig.isAntiScreenshotEnabled, settings.recentAppPrivacy) {
+                    if (securityConfig.isAntiScreenshotEnabled || settings.recentAppPrivacy) {
                         window.setFlags(
                             WindowManager.LayoutParams.FLAG_SECURE,
                             WindowManager.LayoutParams.FLAG_SECURE
