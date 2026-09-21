@@ -32,11 +32,12 @@ object FaceLockStore {
     private fun encrypt(plain: String): String {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getKey())
-        return Base64.NO_WRAP.encodeToString(cipher.iv) + "." +
-            Base64.NO_WRAP.encodeToString(cipher.doFinal(plain.toByteArray(StandardCharsets.UTF_8)))
+        return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + "." +
+            Base64.encodeToString(cipher.doFinal(plain.toByteArray(StandardCharsets.UTF_8)), Base64.NO_WRAP)
     }
 
-    private fun decrypt(value: String): String? = try {
+    private fun decrypt(value: String): String? {
+        return try {
         val parts = value.split(".")
         if (parts.size != 2) return null
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -49,7 +50,8 @@ object FaceLockStore {
             cipher.doFinal(Base64.decode(parts[1], Base64.DEFAULT)),
             StandardCharsets.UTF_8
         )
-    } catch (_: Throwable) { null }
+        } catch (_: Throwable) { null }
+    }
 
     fun saveTemplate(context: Context, vector: List<Float>): Pair<Boolean, String> {
         if (vector.size < 8) return false to "Face template is incomplete."
@@ -108,14 +110,16 @@ object FaceLockStore {
         }
     }
 
-    fun loadTemplate(context: Context): List<Float>? = try {
+    fun loadTemplate(context: Context): List<Float>? {
+        return try {
         val file = File(AppStorageHelper.getFaceLockDir(context), TEMPLATE_FILE)
         if (!file.exists()) return null
         val wrapper = JSONObject(file.readText(StandardCharsets.UTF_8))
         val plain = decrypt(wrapper.optString("encryptedTemplate", "")) ?: return null
         val array = JSONObject(plain).optJSONArray("vector") ?: return null
         List(array.length()) { index -> array.getDouble(index).toFloat() }
-    } catch (_: Throwable) { null }
+        } catch (_: Throwable) { null }
+    }
 
     fun compare(stored: List<Float>, live: List<Float>): MatchResult {
         if (stored.isEmpty() || live.size != stored.size) return MatchResult(false, Double.MAX_VALUE)
