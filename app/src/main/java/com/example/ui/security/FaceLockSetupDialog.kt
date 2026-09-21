@@ -1,39 +1,29 @@
 package com.example.ui.security
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -44,19 +34,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.util.AppSecurityManager
-import kotlinx.coroutines.delay
+import com.example.util.FaceRecognitionEngine
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.launch
-
-private enum class FaceSetupStep {
-    INTRO,
-    CAMERA_PERMISSION,
-    ALIGN_FACE,
-    VERIFY_LIVENESS,
-    COMPLETE
-}
+import java.util.concurrent.Executors
 
 @Composable
 fun FaceLockSetupDialog(
@@ -65,107 +50,117 @@ fun FaceLockSetupDialog(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val coroutineScope = rememberCoroutineScope()
-
-    var currentStep by remember { mutableStateOf(FaceSetupStep.INTRO) }
-    var statusText by remember { mutableStateOf("Ready to register facial features") }
-    var enrollmentProgress by remember { mutableFloatStateOf(0f) }
-    var hasCameraPermission by remember {
+    val scope = rememberCoroutineScope()
+    var hasPermission by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
-    var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
-    var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
-    var isFrontCameraActive by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("Register your face using the front camera.") }
+    var progress by remember { mutableFloatStateOf(0f) }
+    var vectors by remember { mutableStateOf<List<List<Float>>>(emptyList()) }
+    var finished by remember { mutableStateOf(false) }
+    var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
     ) { granted ->
-        hasCameraPermission = granted
-        if (granted) {
-            currentStep = FaceSetupStep.ALIGN_FACE
-        } else {
-            Toast.makeText(context, "Camera permission is required for face registration", Toast.LENGTH_LONG).show()
+        hasPermission = granted
+        if (!granted) Toast.makeText(context, "Camera permission is required for Face Lock.", Toast.LENGTH_LONG).show()
+    }
+
+    val detector = remember {
+        FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .setMinFaceSize(0.15f)
+                .build()
+        )
+    }
+
+    fun stopCamera() {
+        try { provider?.unbindAll() } catch (_: Throwable) {}
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            stopCamera()
+            try { detector.close() } catch (_: Throwable) {}
+            analysisExecutor.shutdown()
         }
     }
 
-    // Laser scan animation
-    val infiniteTransition = rememberInfiniteTransition(label = "scan_laser")
-    val laserY by infiniteTransition.animateFloat(
-        initialValue = 0.15f,
-        targetValue = 0.85f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "laser_y"
-    )
-
-    // Function to bind front camera
-    fun startFrontCamera(previewView: PreviewView) {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-        cameraProviderFuture.addListener({
+    fun bindCamera(previewView: PreviewView) {
+        val future = ProcessCameraProvider.getInstance(context)
+        future.addListener({
             try {
-                val cameraProvider = cameraProviderFuture.get()
-                cameraProviderRef = cameraProvider
+                val cameraProvider = future.get()
+                provider = cameraProvider
                 cameraProvider.unbindAll()
+                val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
 
-                val preview = Preview.Builder().build().also {
-                    it.surfaceProvider = previewView.surfaceProvider
+                analysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                    val mediaImage = imageProxy.image
+                    if (mediaImage == null || finished) {
+                        imageProxy.close()
+                        return@setAnalyzer
+                    }
+                    val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                    detector.process(image)
+                        .addOnSuccessListener { faces ->
+                            val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                            if (face != null && !finished) {
+                                val vector = FaceRecognitionEngine.vector(face)
+                                ContextCompat.getMainExecutor(context).execute {
+                                    if (vectors.size < 8) {
+                                        vectors = vectors + listOf(vector)
+                                        progress = (vectors.size / 8f).coerceAtMost(0.92f)
+                                        status = "Face detected. Keep your head steady… ${vectors.size}/8"
+                                    }
+                                }
+                            } else if (!finished) {
+                                ContextCompat.getMainExecutor(context).execute {
+                                    status = "No clear face detected. Center your face in the frame."
+                                }
+                            }
+                        }
+                        .addOnCompleteListener { imageProxy.close() }
                 }
 
-                // Choose front camera if available, otherwise default
-                val cameraSelector = if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
-                    CameraSelector.DEFAULT_FRONT_CAMERA
-                } else {
-                    CameraSelector.DEFAULT_BACK_CAMERA
-                }
-
-                cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview)
-                isFrontCameraActive = true
-            } catch (e: Exception) {
-                isFrontCameraActive = false
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_FRONT_CAMERA,
+                    preview,
+                    analysis
+                )
+            } catch (e: Throwable) {
+                status = "Could not start front camera: ${e.message}"
             }
         }, ContextCompat.getMainExecutor(context))
     }
 
-    // Cleanup camera when leaving
-    DisposableEffect(Unit) {
-        onDispose {
-            try {
-                cameraProviderRef?.unbindAll()
-            } catch (_: Throwable) {}
-        }
-    }
-
-    // Run calibration & verification sequence
-    fun startEnrollmentProcess() {
-        coroutineScope.launch {
-            statusText = "Align face in the center of the frame..."
-            enrollmentProgress = 0.15f
-            delay(1000L)
-
-            statusText = "Analyzing facial geometry and landmark contours..."
-            enrollmentProgress = 0.40f
-            delay(1200L)
-
-            currentStep = FaceSetupStep.VERIFY_LIVENESS
-            statusText = "Hold steady... confirming live presence..."
-            enrollmentProgress = 0.70f
-            delay(1200L)
-
-            statusText = "Finalizing secure biometric enrollment..."
-            enrollmentProgress = 0.95f
-            delay(800L)
-
-            // Enroll face in AppSecurityManager and persist to fingerprint.dat
-            val (success, msg) = AppSecurityManager.enrollFace(context)
-            if (success) {
-                enrollmentProgress = 1.0f
-                currentStep = FaceSetupStep.COMPLETE
-                statusText = "Face recognition successfully registered!"
+    LaunchedEffect(vectors.size, finished) {
+        if (!finished && vectors.size >= 8) {
+            status = "Building your encrypted face template…"
+            progress = 0.96f
+            val size = vectors.first().size
+            val average = List(size) { i -> vectors.map { it[i] }.average().toFloat() }
+            val (ok, message) = AppSecurityManager.enrollFace(context, average)
+            if (ok) {
+                progress = 1f
+                finished = true
+                stopCamera()
+                status = "Face Lock registered successfully. Fingerprint is not required."
+                Toast.makeText(context, "Face Lock registered.", Toast.LENGTH_SHORT).show()
+                onEnrolled()
             } else {
-                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                statusText = "Registration failed. Please try again."
+                vectors = emptyList()
+                progress = 0f
+                status = message
             }
         }
     }
@@ -175,335 +170,71 @@ fun FaceLockSetupDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .wrapContentHeight()
-                .clip(RoundedCornerShape(24.dp))
+            modifier = Modifier.fillMaxWidth(0.92f).wrapContentHeight().clip(RoundedCornerShape(24.dp))
                 .testTag("face_lock_setup_dialog"),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 8.dp
         ) {
             Column(
-                modifier = Modifier
-                    .padding(22.dp)
-                    .fillMaxWidth(),
+                modifier = Modifier.padding(22.dp).fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(38.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Face,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
+                        Surface(CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
+                            Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Face, null, tint = MaterialTheme.colorScheme.primary) }
                         }
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(Modifier.width(10.dp))
                         Column {
-                            Text(
-                                "Face Lock Setup",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 17.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                "Front Camera Biometric Calibration",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text("Face Lock Setup", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                            Text("Camera-only face matching", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
-                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(Modifier.height(18.dp))
 
-                when (currentStep) {
-                    FaceSetupStep.INTRO -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                                modifier = Modifier.size(90.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.Security,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(48.dp)
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            Text(
-                                "Real Face Lock Verification",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp,
-                                textAlign = TextAlign.Center
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                "Before Face Lock can protect your Vault, you must register your face using the front camera. The facial template is verified against live presence and securely bound to your device and fingerprint.dat credential.",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 8.dp)
-                            )
-
-                            Spacer(modifier = Modifier.height(20.dp))
-
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Look directly into the front camera circle", fontSize = 12.sp)
-                                    }
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Ensure good room lighting without heavy glare", fontSize = 12.sp)
-                                    }
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Hold still during live contour scanning", fontSize = 12.sp)
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(22.dp))
-
-                            Button(
-                                onClick = {
-                                    if (hasCameraPermission) {
-                                        currentStep = FaceSetupStep.ALIGN_FACE
-                                    } else {
-                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                    }
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("btn_start_face_setup")
-                            ) {
-                                Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Begin Face Registration", fontWeight = FontWeight.Bold)
-                            }
-                        }
+                if (!hasPermission) {
+                    Text(
+                        "Face Lock uses the front camera. It does not use fingerprint authentication.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Allow Camera") }
+                } else if (!finished) {
+                    Box(
+                        modifier = Modifier.size(260.dp).clip(CircleShape)
+                            .background(Color.Black)
+                            .border(3.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                    ) {
+                        AndroidView(
+                            factory = { PreviewView(context).also { bindCamera(it) } },
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
-
-                    FaceSetupStep.CAMERA_PERMISSION -> {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(52.dp))
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("Camera Permission Required", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text("Please grant camera permission to calibrate your face.", fontSize = 13.sp, textAlign = TextAlign.Center)
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                                Text("Grant Permission")
-                            }
-                        }
-                    }
-
-                    FaceSetupStep.ALIGN_FACE, FaceSetupStep.VERIFY_LIVENESS -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            // Circular Face Scanner Frame with Live Camera Preview
-                            Box(
-                                modifier = Modifier
-                                    .size(240.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF0F172A))
-                                    .border(3.dp, MaterialTheme.colorScheme.primary, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                // Real CameraX Preview
-                                AndroidView(
-                                    factory = { ctx ->
-                                        PreviewView(ctx).apply {
-                                            scaleType = PreviewView.ScaleType.FILL_CENTER
-                                            previewViewRef = this
-                                            startFrontCamera(this)
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxSize()
-                                )
-
-                                // Overlay HUD
-                                Canvas(modifier = Modifier.fillMaxSize()) {
-                                    val strokeWidth = 3.dp.toPx()
-                                    val ovalWidth = size.width * 0.72f
-                                    val ovalHeight = size.height * 0.85f
-                                    val topLeftX = (size.width - ovalWidth) / 2f
-                                    val topLeftY = (size.height - ovalHeight) / 2f
-
-                                    // Face Guide Oval
-                                    drawOval(
-                                        color = Color(0xFF38BDF8).copy(alpha = 0.7f),
-                                        topLeft = Offset(topLeftX, topLeftY),
-                                        size = Size(ovalWidth, ovalHeight),
-                                        style = Stroke(width = strokeWidth)
-                                    )
-
-                                    // Scanning Laser Line
-                                    val curLaserY = topLeftY + ovalHeight * laserY
-                                    drawLine(
-                                        brush = Brush.horizontalGradient(
-                                            listOf(Color.Transparent, Color(0xFF06B6D4), Color(0xFF67E8F9), Color(0xFF06B6D4), Color.Transparent)
-                                        ),
-                                        start = Offset(topLeftX, curLaserY),
-                                        end = Offset(topLeftX + ovalWidth, curLaserY),
-                                        strokeWidth = 4.dp.toPx(),
-                                        cap = StrokeCap.Round
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(18.dp))
-
-                            // Status text
-                            Text(
-                                text = statusText,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 12.dp)
-                            )
-
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            LinearProgressIndicator(
-                                progress = { enrollmentProgress },
-                                modifier = Modifier
-                                    .fillMaxWidth(0.85f)
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp)),
-                            )
-
-                            Spacer(modifier = Modifier.height(18.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        cameraProviderRef?.unbindAll()
-                                        onDismiss()
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Text("Cancel")
-                                }
-
-                                Button(
-                                    onClick = { startEnrollmentProcess() },
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("btn_calibrate_face"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    enabled = enrollmentProgress == 0f || enrollmentProgress >= 0.95f
-                                ) {
-                                    Text("Capture & Enroll", fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-
-                    FaceSetupStep.COMPLETE -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = Color(0xFF10B981).copy(alpha = 0.15f),
-                                modifier = Modifier.size(80.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        tint = Color(0xFF10B981),
-                                        modifier = Modifier.size(48.dp)
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            Text(
-                                "Face Registration Complete!",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 17.sp,
-                                color = Color(0xFF10B981)
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                "Your face biometric profile is now active and saved. Face Lock is enabled to securely unlock your vault on app launch.",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 12.dp)
-                            )
-
-                            Spacer(modifier = Modifier.height(20.dp))
-
-                            Button(
-                                onClick = {
-                                    cameraProviderRef?.unbindAll()
-                                    onEnrolled()
-                                    onDismiss()
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("btn_done_face_setup")
-                            ) {
-                                Text("Done", fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
+                    Spacer(Modifier.height(16.dp))
+                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(10.dp))
+                    Text(status, textAlign = TextAlign.Center, fontSize = 13.sp)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Keep your face centered and steady. The app stores an encrypted facial-geometry template, not a photo.",
+                        textAlign = TextAlign.Center,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text("✓ Face Lock Registered", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                    Spacer(Modifier.height(8.dp))
+                    Text(status, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(18.dp))
+                    Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
                 }
             }
         }
