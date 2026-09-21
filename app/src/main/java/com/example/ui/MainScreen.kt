@@ -52,6 +52,8 @@ import com.example.ui.sshow.SShowScreen
 import com.example.ui.sshow.SShowViewModel
 import com.example.ui.settings.SettingsScreen
 import com.example.ui.settings.UserManualDialog
+import com.example.ui.settings.DualVaultConnectDialog
+import com.example.util.FirebaseBridgeManager
 import com.example.ui.profile.ProfileDialog
 import com.example.util.AppSecurityManager
 import com.example.util.ProfileManager
@@ -60,6 +62,7 @@ enum class MainAppTab {
     EXCEL_CATALOG,
     IMAGE_VAULT,
     SSHOW,
+    DUAL_VAULT,
     SETTINGS
 }
 
@@ -73,6 +76,7 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val vaultUiState by vaultViewModel.uiState.collectAsStateWithLifecycle()
     val securityConfig by AppSecurityManager.securityConfig.collectAsStateWithLifecycle()
+    val dualSession by FirebaseBridgeManager.currentSession.collectAsStateWithLifecycle()
     val userProfile by ProfileManager.userProfile.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var currentTab by remember { mutableStateOf(MainAppTab.EXCEL_CATALOG) }
@@ -239,6 +243,30 @@ fun MainScreen(
                         )
                     }
 
+                    if (dualSession.isConnected) {
+                        val isDualVault = currentTab == MainAppTab.DUAL_VAULT
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isDualVault) Brush.horizontalGradient(listOf(Color(0xFF00B894), Color(0xFF0984E3)))
+                                    else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
+                                )
+                                .clickable { currentTab = MainAppTab.DUAL_VAULT }
+                                .padding(horizontal = 12.dp)
+                                .testTag("nav_dual_vault_tab")
+                        ) {
+                            Text(
+                                text = "🔗 Dual Vault",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isDualVault) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     val isSettings = currentTab == MainAppTab.SETTINGS
                     Box(
                         contentAlignment = Alignment.Center,
@@ -341,6 +369,14 @@ fun MainScreen(
                     SShowScreen(
                         viewModel = sshowViewModel,
                         modifier = Modifier.weight(1f)
+                    )
+                }
+
+                MainAppTab.DUAL_VAULT -> {
+                    // The paired vault is opened as a full dialog so the tab
+                    // never exposes the pairing-code controls while connected.
+                    DualVaultConnectDialog(
+                        onDismiss = { currentTab = if (dualSession.isConnected) MainAppTab.DUAL_VAULT else MainAppTab.SSHOW }
                     )
                 }
 
