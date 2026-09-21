@@ -120,7 +120,13 @@ object ProfileManager {
                 } catch (_: Throwable) {}
             }
 
+            val code = if (profile.deviceCode.length == 10) profile.deviceCode else generateDeviceProfileCode(
+                email = if (profile.googleEmail.isNotBlank()) profile.googleEmail else profile.emailId,
+                phone = profile.phoneNumber
+            )
+
             val completeProfile = profile.copy(
+                deviceCode = code,
                 profileImagePath = if (mediaPhotoFile.exists()) mediaPhotoFile.absolutePath else profile.profileImagePath,
                 device = if (profile.device.isBlank()) getAutoDeviceModel() else profile.device,
                 updatedAt = System.currentTimeMillis()
@@ -196,6 +202,23 @@ object ProfileManager {
     }
 
     /**
+     * Generates a 10-digit profile device code:
+     * - First 5 letters of Gmail ID
+     * - Last 2 digits of phone number
+     * - 3 unique alphanumeric code characters
+     */
+    fun generateDeviceProfileCode(email: String, phone: String, existingCode: String = ""): String {
+        if (existingCode.length == 10) return existingCode
+        val emailToUse = email.ifBlank { "guest" }
+        val userPart = emailToUse.substringBefore("@").filter { it.isLetterOrDigit() }.lowercase()
+        val first5 = (userPart + "abcde").take(5)
+        val phoneDigits = phone.filter { it.isDigit() }
+        val last2 = if (phoneDigits.length >= 2) phoneDigits.takeLast(2) else "00"
+        val unique3 = ((100..999).random()).toString()
+        return "$first5$last2$unique3"
+    }
+
+    /**
      * Exports profile as a JSON object (used for embedding into fingerprint.dat).
      */
     fun profileToJson(profile: UserProfile): JSONObject {
@@ -217,6 +240,7 @@ object ProfileManager {
             put("googleId", profile.googleId)
             put("googleProfilePicUrl", profile.googleProfilePicUrl)
             put("isGoogleConnected", profile.isGoogleConnected)
+            put("deviceCode", profile.deviceCode)
             put("updatedAt", profile.updatedAt)
         }
     }
@@ -243,11 +267,16 @@ object ProfileManager {
 
             val gEmail = json.optString("googleEmail", "")
             val isGConnected = json.optBoolean("isGoogleConnected", false) || gEmail.isNotBlank()
+            val phone = json.optString("phoneNumber", "")
+            var devCode = json.optString("deviceCode", "")
+            if (devCode.length != 10) {
+                devCode = generateDeviceProfileCode(gEmail.ifBlank { json.optString("emailId", "") }, phone)
+            }
 
             UserProfile(
                 fullName = json.optString("fullName", ""),
                 dateOfBirth = json.optString("dateOfBirth", ""),
-                phoneNumber = json.optString("phoneNumber", ""),
+                phoneNumber = phone,
                 emailId = json.optString("emailId", ""),
                 device = json.optString("device", ""),
                 village = json.optString("village", ""),
@@ -262,6 +291,7 @@ object ProfileManager {
                 googleId = json.optString("googleId", ""),
                 googleProfilePicUrl = json.optString("googleProfilePicUrl", ""),
                 isGoogleConnected = isGConnected,
+                deviceCode = devCode,
                 updatedAt = json.optLong("updatedAt", 0L)
             )
         } catch (_: Throwable) {

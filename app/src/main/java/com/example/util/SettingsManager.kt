@@ -33,6 +33,8 @@ object SettingsManager {
     private const val KEY_APP_LOGO_TS = "key_custom_app_logo_ts"
     private const val KEY_FB_CONNECTED = "key_fb_connected"
     private const val KEY_FB_USERNAME = "key_fb_username"
+    private const val KEY_APP_DOWNLOAD_URL = "key_app_download_url"
+    private const val KEY_FACE_LOCK_ENABLED = "key_face_lock_enabled"
 
     private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -76,6 +78,8 @@ object SettingsManager {
         val logoTs = p.getLong(KEY_APP_LOGO_TS, 0L)
         val fbConnected = p.getBoolean(KEY_FB_CONNECTED, false)
         val fbUser = p.getString(KEY_FB_USERNAME, "") ?: ""
+        val downloadUrl = p.getString(KEY_APP_DOWNLOAD_URL, "https://ais-pre-jgxqbiezgnewblvh6iilnv-571171211889.asia-southeast1.run.app") ?: "https://ais-pre-jgxqbiezgnewblvh6iilnv-571171211889.asia-southeast1.run.app"
+        val faceLock = p.getBoolean(KEY_FACE_LOCK_ENABLED, false)
 
         _settings.value = AppSettings(
             theme = theme,
@@ -100,7 +104,9 @@ object SettingsManager {
             recentAppPrivacy = recentPrivacy,
             customAppLogoTimestamp = logoTs,
             facebookConnected = fbConnected,
-            facebookUserName = fbUser
+            facebookUserName = fbUser,
+            appDownloadUrl = downloadUrl,
+            faceLockEnabled = faceLock
         )
     }
 
@@ -212,5 +218,15 @@ object SettingsManager {
     fun setFacebookConnected(connected: Boolean, userName: String = "") {
         prefs?.edit()?.putBoolean(KEY_FB_CONNECTED, connected)?.putString(KEY_FB_USERNAME, userName)?.apply()
         _settings.value = _settings.value.copy(facebookConnected = connected, facebookUserName = userName)
+    }
+
+    fun setAppDownloadUrl(url: String) {
+        prefs?.edit()?.putString(KEY_APP_DOWNLOAD_URL, url)?.apply()
+        _settings.value = _settings.value.copy(appDownloadUrl = url)
+    }
+
+    fun setFaceLockEnabled(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(KEY_FACE_LOCK_ENABLED, enabled)?.apply()
+        _settings.value = _settings.value.copy(faceLockEnabled = enabled)
     }
 }

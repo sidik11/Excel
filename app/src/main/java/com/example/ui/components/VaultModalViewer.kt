@@ -90,66 +90,54 @@ fun VaultModalViewer(
                 .fillMaxSize()
                 .background(Color.Black)
                 .testTag("vault_modal_viewer")
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { totalDrag = 0f },
-                        onDragEnd = {
-                            if (totalDrag < -60f) {
-                                onNext()
-                            } else if (totalDrag > 60f) {
-                                onPrevious()
-                            }
-                            totalDrag = 0f
-                        },
-                        onDragCancel = { totalDrag = 0f },
-                        onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            totalDrag += dragAmount
-                        }
-                    )
-                }
         ) {
-            // Main Display Image (Tap to pause/resume slideshow)
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(currentItem.file)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = currentItem.name,
-                contentScale = if (settings.imageFitMode == "crop") ContentScale.Crop else ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable {
-                        if (isSlideshowPlaying) {
-                            onTogglePause()
-                        }
-                    }
-                    .testTag("vault_modal_full_image"),
-                loading = {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(
-                            color = Color(0xFF6C5CE7),
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(48.dp)
-                        )
-                    }
-                },
-                error = {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Could not preview ${currentItem.name}",
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = 14.sp
-                        )
+            // Main Display Image inside ZoomableBox (pinch-to-zoom, pan, double-tap zoom)
+            ZoomableBox(
+                modifier = Modifier.fillMaxSize(),
+                onSwipeNext = onNext,
+                onSwipePrevious = onPrevious,
+                onSingleTap = {
+                    if (isSlideshowPlaying) {
+                        onTogglePause()
                     }
                 }
-            )
+            ) {
+                SubcomposeAsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(currentItem.file)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = currentItem.name,
+                    contentScale = if (settings.imageFitMode == "crop") ContentScale.Crop else ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("vault_modal_full_image"),
+                    loading = {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF6C5CE7),
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
+                    },
+                    error = {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Could not preview ${currentItem.name}",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+                )
+            }
 
             // Slideshow Progress Bar at top
             if (isSlideshowPlaying) {

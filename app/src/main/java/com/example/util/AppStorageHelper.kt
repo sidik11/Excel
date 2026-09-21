@@ -67,6 +67,15 @@ object AppStorageHelper {
     }
 
     /**
+     * Dedicated folder for face lock registration data and biometric calibration in Android/media/<packageName>/facelock.
+     */
+    fun getFaceLockDir(context: Context): File {
+        val dir = File(getDedicatedMediaDir(context), "facelock")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /**
      * Dedicated folder for user profile data and profile photo in Android/media/<packageName>/profile.
      */
     fun getProfileMediaDir(context: Context): File {

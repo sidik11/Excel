@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Folder
@@ -51,6 +52,8 @@ import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Delete
 import androidx.fragment.app.FragmentActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -86,6 +89,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AppTheme
 import com.example.ui.security.ChangeMasterPasswordDialog
+import com.example.ui.security.FaceLockSetupDialog
 import com.example.ui.security.PinManagementDialog
 import com.example.ui.security.SecurityFolderInspectorDialog
 import com.example.ui.profile.ProfileDialog
@@ -114,6 +118,8 @@ fun SettingsScreen(
     var showLogoDialog by remember { mutableStateOf(false) }
     var showShareQrDialog by remember { mutableStateOf(false) }
     var showDualVaultDialog by remember { mutableStateOf(false) }
+    var showFileManagerDialog by remember { mutableStateOf(false) }
+    var showFaceSetupDialog by remember { mutableStateOf(false) }
 
     val bioStatus = remember { AppSecurityManager.checkBiometricStatus(context) }
 
@@ -492,6 +498,102 @@ fun SettingsScreen(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
 
+                // Face Recognition Lock (Real Camera & Biometric Verification)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Face, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Real Face Recognition Lock", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = if (securityConfig.isFaceEnrolled) Color(0xFF10B981).copy(alpha = 0.15f) else Color(0xFFF59E0B).copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = if (securityConfig.isFaceEnrolled) "ENROLLED" else "SETUP REQUIRED",
+                                        color = if (securityConfig.isFaceEnrolled) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                if (securityConfig.isFaceEnrolled) {
+                                    val dateStr = if (securityConfig.faceEnrolledAt > 0) {
+                                        SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(securityConfig.faceEnrolledAt))
+                                    } else "Active"
+                                    "Face calibrated ($dateStr) • Front camera verification on startup."
+                                } else {
+                                    "Must complete face calibration setup first before enabling."
+                                },
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = securityConfig.isFaceLockEnabled && securityConfig.isFaceEnrolled,
+                            onCheckedChange = { isEnabled ->
+                                if (isEnabled && !securityConfig.isFaceEnrolled) {
+                                    Toast.makeText(context, "Please set up your face recognition first.", Toast.LENGTH_LONG).show()
+                                    showFaceSetupDialog = true
+                                } else {
+                                    AppSecurityManager.setFaceLockEnabled(context, isEnabled)
+                                    val status = if (isEnabled) "Face lock enabled." else "Face lock disabled."
+                                    Toast.makeText(context, status, Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = SwitchDefaults.colors(checkedThumbColor = MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.testTag("toggle_face_lock")
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { showFaceSetupDialog = true },
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f).testTag("btn_setup_face_lock")
+                        ) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                if (securityConfig.isFaceEnrolled) "Re-Enroll Face" else "Set Up Face Lock",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        if (securityConfig.isFaceEnrolled) {
+                            OutlinedButton(
+                                onClick = {
+                                    AppSecurityManager.removeEnrolledFace(context)
+                                    Toast.makeText(context, "Face registration removed.", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                modifier = Modifier.testTag("btn_remove_face_lock")
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Remove", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
+
                 // Master Password Change Button
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -822,6 +924,37 @@ fun SettingsScreen(
                     Icon(Icons.Default.CleaningServices, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Clean Temporary Cache & Workspace", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline)
+
+                // Password-Protected Media File Manager
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.FolderSpecial, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("App Media File Manager", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        }
+                        Text(
+                            "Password-protected browser to inspect app media folders, preview files, and zoom images.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = { showFileManagerDialog = true },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("btn_open_file_manager")
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Open", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -1316,6 +1449,22 @@ fun SettingsScreen(
         if (showDualVaultDialog) {
             DualVaultConnectDialog(
                 onDismiss = { showDualVaultDialog = false }
+            )
+        }
+
+        if (showFileManagerDialog) {
+            AppMediaFileManagerDialog(
+                onDismiss = { showFileManagerDialog = false }
+            )
+        }
+
+        if (showFaceSetupDialog) {
+            FaceLockSetupDialog(
+                onDismiss = { showFaceSetupDialog = false },
+                onEnrolled = {
+                    showFaceSetupDialog = false
+                    Toast.makeText(context, "Face recognition calibrated and enabled!", Toast.LENGTH_SHORT).show()
+                }
             )
         }
     }

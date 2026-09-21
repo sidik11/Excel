@@ -85,61 +85,49 @@ fun ModalImageViewer(
                 .fillMaxSize()
                 .background(Color.Black)
                 .testTag("modal_image_viewer")
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { totalDrag = 0f },
-                        onDragEnd = {
-                            if (totalDrag < -60f) {
-                                onNext()
-                            } else if (totalDrag > 60f) {
-                                onPrevious()
-                            }
-                            totalDrag = 0f
-                        },
-                        onDragCancel = { totalDrag = 0f },
-                        onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            totalDrag += dragAmount
-                        }
-                    )
-                }
         ) {
-            // Main Image
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(currentItem.fileUri)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = currentItem.fileName,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag("modal_full_image"),
-                loading = {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(
-                            color = PrimaryBlue,
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(48.dp)
-                        )
+            // Main Image with ZoomableBox pinch-to-zoom & pan gestures
+            ZoomableBox(
+                modifier = Modifier.fillMaxSize(),
+                onSwipeNext = onNext,
+                onSwipePrevious = onPrevious
+            ) {
+                SubcomposeAsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(currentItem.fileUri)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = currentItem.fileName,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("modal_full_image"),
+                    loading = {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = PrimaryBlue,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
+                    },
+                    error = {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Could not display image:\n${currentItem.fileName}",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 14.sp
+                            )
+                        }
                     }
-                },
-                error = {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Could not display image:\n${currentItem.fileName}",
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            )
+                )
+            }
 
             // Top Bar
             Box(

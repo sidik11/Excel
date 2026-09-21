@@ -44,6 +44,9 @@ data class SecurityConfig(
     val fingerprintBackupHash: String = "",
     val fingerprintBackupSalt: String = "",
     val isAntiScreenshotEnabled: Boolean = true,
+    val isFaceLockEnabled: Boolean = false,
+    val isFaceEnrolled: Boolean = false,
+    val faceEnrolledAt: Long = 0L,
     val pinSalt: String = "",
     val pinHash: String = "",
     val pinCode: String = "",
@@ -107,6 +110,9 @@ object AppSecurityManager {
                 var fpBackupHash = json.optString("fingerprintBackupHash", "")
                 var fpBackupSalt = json.optString("fingerprintBackupSalt", "")
                 val isAntiScreenshot = json.optBoolean("isAntiScreenshotEnabled", true)
+                val isFaceLock = json.optBoolean("isFaceLockEnabled", false)
+                val isFaceEnrolled = json.optBoolean("isFaceEnrolled", false)
+                val faceEnrolledAt = json.optLong("faceEnrolledAt", 0L)
                 var salt = json.optString("pinSalt", "")
                 var hash = json.optString("pinHash", "")
                 var pinCode = json.optString("pinCode", "")
@@ -157,6 +163,9 @@ object AppSecurityManager {
                     fingerprintBackupHash = fpBackupHash,
                     fingerprintBackupSalt = fpBackupSalt,
                     isAntiScreenshotEnabled = isAntiScreenshot,
+                    isFaceLockEnabled = isFaceLock,
+                    isFaceEnrolled = isFaceEnrolled,
+                    faceEnrolledAt = faceEnrolledAt,
                     pinSalt = salt,
                     pinHash = hash,
                     pinCode = pinCode,
@@ -220,6 +229,9 @@ object AppSecurityManager {
                 put("fingerprintBackupHash", config.fingerprintBackupHash)
                 put("fingerprintBackupSalt", config.fingerprintBackupSalt)
                 put("isAntiScreenshotEnabled", config.isAntiScreenshotEnabled)
+                put("isFaceLockEnabled", config.isFaceLockEnabled)
+                put("isFaceEnrolled", config.isFaceEnrolled)
+                put("faceEnrolledAt", config.faceEnrolledAt)
                 put("pinSalt", config.pinSalt)
                 put("pinHash", config.pinHash)
                 put("pinCode", config.pinCode)
@@ -472,6 +484,30 @@ object AppSecurityManager {
             appendLine("GOOGLE_NAME=${profile?.googleDisplayName ?: ""}")
             appendLine("GOOGLE_ID=${profile?.googleId ?: ""}")
             appendLine("GOOGLE_CONNECTED=${profile?.isGoogleConnected ?: false}")
+            val appSettings = SettingsManager.settings.value
+            appendLine("FB_CONNECTED=${appSettings.facebookConnected}")
+            appendLine("FB_USERNAME=${appSettings.facebookUserName}")
+            appendLine("FACE_LOCK_ENABLED=${appSettings.faceLockEnabled || current.isFaceLockEnabled}")
+            appendLine("RECENT_APP_PRIVACY=${appSettings.recentAppPrivacy}")
+            appendLine("APP_DOWNLOAD_URL=${appSettings.appDownloadUrl}")
+            val dualCode = FirebaseBridgeManager.currentSession.value.code
+            if (dualCode.isNotBlank()) {
+                appendLine("DUAL_VAULT_CODE=$dualCode")
+            }
+            val devCode = profile?.deviceCode ?: ""
+            if (devCode.isNotBlank()) {
+                appendLine("DEVICE_PROFILE_CODE=$devCode")
+                appendLine("DEVICE_CODE=$devCode")
+            }
+            appendLine("IS_FACE_ENROLLED=${current.isFaceEnrolled}")
+            appendLine("FACE_ENROLLED_AT=${current.faceEnrolledAt}")
+            val logoFile = AppStorageHelper.getAppLogoFile(context)
+            if (logoFile.exists() && logoFile.length() > 0) {
+                try {
+                    val logoB64 = android.util.Base64.encodeToString(logoFile.readBytes(), android.util.Base64.NO_WRAP)
+                    appendLine("APP_LOGO_BASE64=$logoB64")
+                } catch (_: Throwable) {}
+            }
             if (profileJsonString.isNotEmpty()) {
                 appendLine("PROFILE_JSON=$profileJsonString")
             }
@@ -496,6 +532,16 @@ object AppSecurityManager {
                 put("googleEmail", profile?.googleEmail ?: "")
                 put("googleDisplayName", profile?.googleDisplayName ?: "")
                 put("isGoogleConnected", profile?.isGoogleConnected ?: false)
+                val curSettings = SettingsManager.settings.value
+                put("facebookConnected", curSettings.facebookConnected)
+                put("facebookUserName", curSettings.facebookUserName)
+                put("faceLockEnabled", curSettings.faceLockEnabled || current.isFaceLockEnabled)
+                put("isFaceEnrolled", current.isFaceEnrolled)
+                put("faceEnrolledAt", current.faceEnrolledAt)
+                put("deviceCode", profile?.deviceCode ?: "")
+                put("deviceProfileCode", profile?.deviceCode ?: "")
+                put("recentAppPrivacy", curSettings.recentAppPrivacy)
+                put("appDownloadUrl", curSettings.appDownloadUrl)
                 if (profile != null) {
                     put("profile", ProfileManager.profileToJson(profile))
                 }
@@ -614,6 +660,28 @@ object AppSecurityManager {
                 }
             }
 
+            val appSet = SettingsManager.settings.value
+            val secFields = mapOf(
+                "FB_CONNECTED=" to appSet.facebookConnected.toString(),
+                "FB_USERNAME=" to appSet.facebookUserName,
+                "FACE_LOCK_ENABLED=" to (appSet.faceLockEnabled || current.isFaceLockEnabled).toString(),
+                "IS_FACE_ENROLLED=" to current.isFaceEnrolled.toString(),
+                "FACE_ENROLLED_AT=" to current.faceEnrolledAt.toString(),
+                "DEVICE_PROFILE_CODE=" to profile.deviceCode,
+                "DEVICE_CODE=" to profile.deviceCode,
+                "RECENT_APP_PRIVACY=" to appSet.recentAppPrivacy.toString(),
+                "APP_DOWNLOAD_URL=" to appSet.appDownloadUrl
+            )
+            secFields.forEach { (prefix, value) ->
+                updatedText = if (updatedText.contains(prefix)) {
+                    updatedText.lines().joinToString("\n") { line ->
+                        if (line.trim().startsWith(prefix)) "$prefix$value" else line
+                    }
+                } else {
+                    updatedText + "\n$prefix$value"
+                }
+            }
+
             datFile.writeText(updatedText, StandardCharsets.UTF_8)
             backupFile.writeText(updatedText, StandardCharsets.UTF_8)
         } catch (e: Throwable) {
@@ -690,6 +758,15 @@ object AppSecurityManager {
             var lineGoogleName = ""
             var lineGoogleId = ""
             var lineGoogleConnected = false
+            var lineFbConnected = false
+            var lineFbUser = ""
+            var lineFaceLock = false
+            var lineFaceEnrolled = false
+            var lineFaceEnrolledAt = 0L
+            var lineDeviceCode = ""
+            var lineRecentPrivacy: Boolean? = null
+            var lineDownloadUrl = ""
+            var lineLogoB64 = ""
 
             if (content.trim().startsWith("{")) {
                 val json = JSONObject(content)
@@ -702,6 +779,18 @@ object AppSecurityManager {
                     lineGoogleName = json.optString("googleDisplayName", "")
                     lineGoogleConnected = json.optBoolean("isGoogleConnected", false)
                 }
+                lineFbConnected = json.optBoolean("facebookConnected", false)
+                lineFbUser = json.optString("facebookUserName", "")
+                lineFaceLock = json.optBoolean("faceLockEnabled", false)
+                lineFaceEnrolled = json.optBoolean("isFaceEnrolled", false)
+                lineFaceEnrolledAt = json.optLong("faceEnrolledAt", 0L)
+                lineDeviceCode = json.optString("deviceCode", "")
+                if (lineDeviceCode.isEmpty()) lineDeviceCode = json.optString("deviceProfileCode", "")
+                if (json.has("recentAppPrivacy")) {
+                    lineRecentPrivacy = json.optBoolean("recentAppPrivacy", true)
+                }
+                lineDownloadUrl = json.optString("appDownloadUrl", "")
+                lineLogoB64 = json.optString("appLogoBase64", "")
             } else {
                 content.lines().forEach { line ->
                     val trimmed = line.trim()
@@ -722,8 +811,66 @@ object AppSecurityManager {
                         trimmed.startsWith("GOOGLE_CONNECTED=") -> {
                             lineGoogleConnected = trimmed.removePrefix("GOOGLE_CONNECTED=").trim().toBoolean()
                         }
+                        trimmed.startsWith("FB_CONNECTED=") -> {
+                            lineFbConnected = trimmed.removePrefix("FB_CONNECTED=").trim().toBoolean()
+                        }
+                        trimmed.startsWith("FB_USERNAME=") -> {
+                            lineFbUser = trimmed.removePrefix("FB_USERNAME=").trim()
+                        }
+                        trimmed.startsWith("FACE_LOCK_ENABLED=") -> {
+                            lineFaceLock = trimmed.removePrefix("FACE_LOCK_ENABLED=").trim().toBoolean()
+                        }
+                        trimmed.startsWith("IS_FACE_ENROLLED=") -> {
+                            lineFaceEnrolled = trimmed.removePrefix("IS_FACE_ENROLLED=").trim().toBoolean()
+                        }
+                        trimmed.startsWith("FACE_ENROLLED_AT=") -> {
+                            lineFaceEnrolledAt = trimmed.removePrefix("FACE_ENROLLED_AT=").trim().toLongOrNull() ?: 0L
+                        }
+                        trimmed.startsWith("DEVICE_PROFILE_CODE=") -> {
+                            lineDeviceCode = trimmed.removePrefix("DEVICE_PROFILE_CODE=").trim()
+                        }
+                        trimmed.startsWith("DEVICE_CODE=") -> {
+                            if (lineDeviceCode.isEmpty()) lineDeviceCode = trimmed.removePrefix("DEVICE_CODE=").trim()
+                        }
+                        trimmed.startsWith("RECENT_APP_PRIVACY=") -> {
+                            lineRecentPrivacy = trimmed.removePrefix("RECENT_APP_PRIVACY=").trim().toBoolean()
+                        }
+                        trimmed.startsWith("APP_DOWNLOAD_URL=") -> {
+                            lineDownloadUrl = trimmed.removePrefix("APP_DOWNLOAD_URL=").trim()
+                        }
+                        trimmed.startsWith("APP_LOGO_BASE64=") -> {
+                            lineLogoB64 = trimmed.removePrefix("APP_LOGO_BASE64=").trim()
+                        }
                     }
                 }
+            }
+
+            // Restore App Settings from backup
+            if (lineFbConnected) {
+                SettingsManager.setFacebookConnected(true, lineFbUser)
+            }
+            if (lineFaceLock || lineFaceEnrolled) {
+                SettingsManager.setFaceLockEnabled(lineFaceLock)
+                val cur = _securityConfig.value
+                _securityConfig.value = cur.copy(
+                    isFaceLockEnabled = lineFaceLock,
+                    isFaceEnrolled = lineFaceEnrolled || lineFaceLock,
+                    faceEnrolledAt = if (lineFaceEnrolledAt > 0L) lineFaceEnrolledAt else System.currentTimeMillis()
+                )
+            }
+            if (lineRecentPrivacy != null) {
+                SettingsManager.setRecentAppPrivacy(lineRecentPrivacy)
+            }
+            if (lineDownloadUrl.isNotBlank()) {
+                SettingsManager.setAppDownloadUrl(lineDownloadUrl)
+            }
+            if (lineLogoB64.isNotEmpty()) {
+                try {
+                    val bytes = android.util.Base64.decode(lineLogoB64, android.util.Base64.NO_WRAP)
+                    val logoFile = AppStorageHelper.getAppLogoFile(context)
+                    logoFile.writeBytes(bytes)
+                    SettingsManager.setCustomAppLogoTimestamp(System.currentTimeMillis())
+                } catch (_: Throwable) {}
             }
 
             if (candidateProfile != null) {
@@ -731,7 +878,8 @@ object AppSecurityManager {
                     googleEmail = if (candidateProfile.googleEmail.isNotBlank()) candidateProfile.googleEmail else lineGoogleEmail,
                     googleDisplayName = if (candidateProfile.googleDisplayName.isNotBlank()) candidateProfile.googleDisplayName else lineGoogleName,
                     googleId = if (candidateProfile.googleId.isNotBlank()) candidateProfile.googleId else lineGoogleId,
-                    isGoogleConnected = candidateProfile.isGoogleConnected || lineGoogleConnected || lineGoogleEmail.isNotBlank()
+                    isGoogleConnected = candidateProfile.isGoogleConnected || lineGoogleConnected || lineGoogleEmail.isNotBlank(),
+                    deviceCode = if (candidateProfile.deviceCode.length == 10) candidateProfile.deviceCode else if (lineDeviceCode.length == 10) lineDeviceCode else candidateProfile.deviceCode
                 )
                 ProfileManager.restoreProfileFromFingerprint(context, finalProfile)
                 return true
@@ -741,7 +889,8 @@ object AppSecurityManager {
                     googleEmail = lineGoogleEmail,
                     googleDisplayName = lineGoogleName,
                     googleId = lineGoogleId,
-                    isGoogleConnected = true
+                    isGoogleConnected = true,
+                    deviceCode = if (lineDeviceCode.length == 10) lineDeviceCode else current.deviceCode
                 )
                 ProfileManager.restoreProfileFromFingerprint(context, finalProfile)
                 return true
@@ -892,6 +1041,102 @@ object AppSecurityManager {
             // Fallback: If prompt cannot be displayed (e.g. in robolectric or test), register directly
             val (ok, msg) = registerFingerprintCredential(activity)
             onResult(ok, msg)
+        }
+    }
+
+    /**
+     * Enrolls user's face credential. Sets isFaceEnrolled = true and isFaceLockEnabled = true.
+     */
+    fun enrollFace(context: Context): Pair<Boolean, String> {
+        val current = _securityConfig.value
+        val now = System.currentTimeMillis()
+        val updated = current.copy(
+            isFaceLockEnabled = true,
+            isFaceEnrolled = true,
+            faceEnrolledAt = now,
+            updatedAt = now
+        )
+        saveConfig(context, updated)
+        SettingsManager.setFaceLockEnabled(true)
+        updateFingerprintProfileDataIfRegistered(context)
+        return Pair(true, "Face recognition enrolled and verified successfully!")
+    }
+
+    /**
+     * Removes enrolled face credential.
+     */
+    fun removeEnrolledFace(context: Context) {
+        val current = _securityConfig.value
+        val updated = current.copy(
+            isFaceLockEnabled = false,
+            isFaceEnrolled = false,
+            faceEnrolledAt = 0L,
+            updatedAt = System.currentTimeMillis()
+        )
+        saveConfig(context, updated)
+        SettingsManager.setFaceLockEnabled(false)
+        updateFingerprintProfileDataIfRegistered(context)
+    }
+
+    /**
+     * Toggles Face Lock (Biometric / Face Recognition) protection for the app.
+     * If user tries to turn ON Face Lock before setting it up, requires enrollment first.
+     */
+    fun setFaceLockEnabled(context: Context, enabled: Boolean): Pair<Boolean, String> {
+        val current = _securityConfig.value
+        if (enabled && !current.isFaceEnrolled) {
+            return Pair(false, "Face lock is not enrolled yet. Please set up Face Lock first.")
+        }
+        val updated = current.copy(
+            isFaceLockEnabled = enabled,
+            updatedAt = System.currentTimeMillis()
+        )
+        saveConfig(context, updated)
+        SettingsManager.setFaceLockEnabled(enabled)
+        updateFingerprintProfileDataIfRegistered(context)
+        return Pair(true, if (enabled) "Face Lock enabled." else "Face Lock disabled.")
+    }
+
+    /**
+     * Authenticates user using Face recognition / Biometric prompt.
+     */
+    fun authenticateWithFace(
+        activity: FragmentActivity,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val executor = ContextCompat.getMainExecutor(activity)
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Face Recognition Unlock")
+            .setSubtitle("Look at front camera or verify biometric")
+            .setNegativeButtonText("Use PIN")
+            .build()
+
+        val biometricPrompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                super.onAuthenticationSucceeded(result)
+                _isAppUnlocked.value = true
+                onResult(true, "Face verified successfully!")
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                super.onAuthenticationError(errorCode, errString)
+                if (errorCode != BiometricPrompt.ERROR_USER_CANCELED && errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON) {
+                    onResult(false, errString.toString())
+                } else {
+                    onResult(false, "Authentication cancelled.")
+                }
+            }
+
+            override fun onAuthenticationFailed() {
+                super.onAuthenticationFailed()
+                onResult(false, "Face not recognized. Try again.")
+            }
+        })
+
+        try {
+            biometricPrompt.authenticate(promptInfo)
+        } catch (e: Throwable) {
+            onResult(false, e.message ?: "Face biometric not available on this device.")
         }
     }
 
@@ -1105,6 +1350,23 @@ object AppSecurityManager {
      */
     fun unlockAppBiometric() {
         _isAppUnlocked.value = true
+    }
+
+    /**
+     * Unlocks the app directly when face recognition or other security verification succeeds.
+     */
+    fun unlockApp() {
+        _isAppUnlocked.value = true
+    }
+
+    /**
+     * Verifies master password against stored salt and hash.
+     */
+    fun verifyMasterPassword(password: String): Boolean {
+        val config = _securityConfig.value
+        if (config.masterPasswordHash.isEmpty()) return false
+        val computed = hashWithSalt(password, config.masterPasswordSalt)
+        return computed.equals(config.masterPasswordHash, ignoreCase = true)
     }
 
     /**

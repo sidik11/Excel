@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ElectricBolt
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
@@ -93,6 +94,7 @@ fun AppLockScreen(
     var isChecking by remember { mutableStateOf(false) }
 
     var showBackupSuccessDialog by remember { mutableStateOf(false) }
+    var showFaceUnlockDialog by remember { mutableStateOf(false) }
     var showResetPinDialog by remember { mutableStateOf(false) }
     var newPinInput by remember { mutableStateOf("") }
     var resetPinError by remember { mutableStateOf<String?>(null) }
@@ -450,32 +452,61 @@ fun AppLockScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Option to use Backup Fingerprint (for forgotten PIN or new device)
-                OutlinedButton(
-                    onClick = {
-                        try {
-                            uploadFingerprintLauncher.launch(arrayOf("*/*"))
-                        } catch (_: Throwable) {
-                            Toast.makeText(context, "Could not open file chooser.", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    shape = RoundedCornerShape(24.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, themePrimary.copy(alpha = 0.5f)),
-                    modifier = Modifier.testTag("btn_use_backup_fingerprint")
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Fingerprint,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = themePrimary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Use Backup Fingerprint",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = themePrimary
-                    )
+                    // Face Unlock Button
+                    if (securityConfig.isFaceLockEnabled) {
+                        OutlinedButton(
+                            onClick = { showFaceUnlockDialog = true },
+                            shape = RoundedCornerShape(24.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF06B6D4)),
+                            modifier = Modifier.testTag("btn_use_facelock")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Face,
+                                contentDescription = "Face Unlock",
+                                modifier = Modifier.size(18.dp),
+                                tint = Color(0xFF06B6D4)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Face Unlock",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF06B6D4)
+                            )
+                        }
+                    }
+
+                    // Option to use Backup Fingerprint (for forgotten PIN or new device)
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                uploadFingerprintLauncher.launch(arrayOf("*/*"))
+                            } catch (_: Throwable) {
+                                Toast.makeText(context, "Could not open file chooser.", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        shape = RoundedCornerShape(24.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, themePrimary.copy(alpha = 0.5f)),
+                        modifier = Modifier.testTag("btn_use_backup_fingerprint")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Fingerprint,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = themePrimary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Backup Credential",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = themePrimary
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
@@ -644,6 +675,16 @@ fun AppLockScreen(
                 ) {
                     Text("Skip")
                 }
+            }
+        )
+    }
+
+    if (showFaceUnlockDialog) {
+        FaceUnlockDialog(
+            onDismiss = { showFaceUnlockDialog = false },
+            onUnlocked = {
+                showFaceUnlockDialog = false
+                onUnlocked()
             }
         )
     }

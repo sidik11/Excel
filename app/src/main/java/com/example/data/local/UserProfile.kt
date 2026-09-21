@@ -18,8 +18,21 @@ data class UserProfile(
     val googleId: String = "",
     val googleProfilePicUrl: String = "",
     val isGoogleConnected: Boolean = false,
+    val deviceCode: String = "",
     val updatedAt: Long = 0L
 ) {
+    /**
+     * Returns or computes the profile's 10-character device code:
+     * 5 letters from Gmail ID + last 2 digits of phone number + 3 unique code chars.
+     */
+    fun get10DigitProfileCode(): String {
+        if (deviceCode.length == 10) return deviceCode
+        val emailToUse = if (googleEmail.isNotBlank()) googleEmail else emailId
+        val emailPrefix = (emailToUse.substringBefore("@").filter { it.isLetterOrDigit() }.lowercase() + "abcde").take(5)
+        val phoneDigits = phoneNumber.filter { it.isDigit() }
+        val last2Phone = if (phoneDigits.length >= 2) phoneDigits.takeLast(2) else "00"
+        return "${emailPrefix}${last2Phone}7X9"
+    }
     /**
      * Checks if a Google account is connected to this profile.
      */

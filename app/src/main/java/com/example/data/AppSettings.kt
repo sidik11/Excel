@@ -32,5 +32,7 @@ data class AppSettings(
     val recentAppPrivacy: Boolean = true,
     val customAppLogoTimestamp: Long = 0L,
     val facebookConnected: Boolean = false,
-    val facebookUserName: String = ""
+    val facebookUserName: String = "",
+    val appDownloadUrl: String = "https://ais-pre-jgxqbiezgnewblvh6iilnv-571171211889.asia-southeast1.run.app",
+    val faceLockEnabled: Boolean = false
 )
