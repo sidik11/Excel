@@ -85,6 +85,10 @@ fun DualVaultConnectDialog(
     // Delete confirmation state
     var fileToDelete by remember { mutableStateOf<DualVaultFileInfo?>(null) }
 
+    // A connected session always owns the dialog state. Pairing controls are
+    // unreachable while connected, even if the previous UI mode was CHOOSE.
+    val effectiveMode = if (session.isConnected) DualVaultMode.COMBINED_VAULT else currentMode
+
     LaunchedEffect(Unit) {
         FirebaseBridgeManager.refreshDualVaultFiles(context)
         if (session.isConnected && session.sessionId.isNotBlank()) {
@@ -260,7 +264,7 @@ fun DualVaultConnectDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                when (currentMode) {
+                when (effectiveMode) {
                     DualVaultMode.CHOOSE -> {
                         Column(
                             modifier = Modifier
