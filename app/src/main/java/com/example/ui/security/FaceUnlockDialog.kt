@@ -178,7 +178,7 @@ fun FaceUnlockDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
+                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
                             Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Face, null, tint = MaterialTheme.colorScheme.primary) }
                         }
                         Spacer(Modifier.width(10.dp))
