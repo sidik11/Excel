@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Notepad Body -->
+    <path
+        android:fillColor="#F59E0B"
+        android:pathData="M24,16h60c5.5,0 10,4.5 10,10v60c0,5.5 -4.5,10 -10,10H24c-5.5,0 -10,-4.5 -10,-10V26c0,-5.5 4.5,-10 10,-10z" />
+    <!-- Paper Surface -->
+    <path
+        android:fillColor="#FEF3C7"
+        android:pathData="M26,24h56c3.3,0 6,2.7 6,6v52c0,3.3 -2.7,6 -6,6H26c-3.3,0 -6,-2.7 -6,-6V30c0,-3.3 2.7,-6 6,-6z" />
+    <!-- Ruled Lines -->
+    <path
+        android:fillColor="#D97706"
+        android:pathData="M32,38h44v3H32z M32,48h44v3H32z M32,58h44v3H32z M32,68h32v3H32z" />
+    <!-- Pencil Accent -->
+    <path
+        android:fillColor="#DC2626"
+        android:pathData="M70,66l12,12 -4,4 -12,-12z" />
+</vector>
